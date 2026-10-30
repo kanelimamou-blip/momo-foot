@@ -50,8 +50,15 @@ window.MOMO_CONFIG = {
   // Photos du terrain : chemins vers docs/photos/... ; vide = cases de démo.
   photos: [],
 
-  // Vide = l'appli tourne sur le téléphone avec des données de démo.
-  FIREBASE_CONFIG: null,
+  // Projet Firebase de Momo Foot (configuration publique : la sécurité vient des règles Firestore). null = sans comptes.
+  FIREBASE_CONFIG: {
+    apiKey: "AIzaSyDWrRmFUZQd4hNPQ9vPVJ3gvBRobGZwoAg",
+    authDomain: "momo-b0cb2.firebaseapp.com",
+    projectId: "momo-b0cb2",
+    storageBucket: "momo-b0cb2.firebasestorage.app",
+    messagingSenderId: "149658617883",
+    appId: "1:149658617883:web:df118ffa3dad7a85cb90be",
+  },
   // Identifiant Firebase du propriétaire de l'appli : lui seul ouvre l'espace admin (le même dans firestore.rules).
   PROPRIETAIRE_UID: "",
 };
