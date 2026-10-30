@@ -1,0 +1,2 @@
+{ "name": "FC Momo Foot", "short_name": "Momo Foot", "start_url": "./", "display": "standalone", "background_color": "#0B3F2A", "theme_color": "#0B3F2A", "lang": "fr",
+  "icons": [{ "src": "icons/logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }] }
