@@ -1,0 +1,51 @@
+rules_version = '2';
+// Règles de Momo Foot, à coller dans la console Firebase (Firestore > Règles).
+// Remplacer PROPRIETAIRE_UID par l'identifiant du compte propriétaire (le même que dans docs/config.js).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner() { return signedIn() && request.auth.uid == "PROPRIETAIRE_UID"; }
+    function str(v, max) { return v is string && v.size() <= max; }
+
+    // Fiche de chaque compte client
+    match /users/{uid} {
+      allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
+      // création par le client lui-même, actif, avec les dates du serveur
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["name", "email", "created", "lastSeen", "active", "role", "poste"])
+        && request.resource.data.active == true
+        && request.resource.data.created == request.time
+        && request.resource.data.lastSeen == request.time
+        && str(request.resource.data.name, 80) && str(request.resource.data.email, 120)
+        && request.resource.data.role in ["joueur", "capitaine", "personnel", "gerant"]
+        && str(request.resource.data.poste, 30);
+      // un compte actif met à jour son nom, son rôle, son poste et sa dernière activité ; jamais son statut ni sa date d'inscription
+      allow update: if signedIn() && request.auth.uid == uid
+        && resource.data.active == true
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "role", "poste", "lastSeen"])
+        && request.resource.data.lastSeen == request.time
+        && str(request.resource.data.name, 80)
+        && request.resource.data.role in ["joueur", "capitaine", "personnel", "gerant"]
+        && str(request.resource.data.poste, 30);
+      // le propriétaire active ou suspend un compte, et rien d'autre
+      allow update: if isOwner()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["active"])
+        && request.resource.data.active is bool;
+      allow delete: if false;
+    }
+
+    // Journal des erreurs : tout le monde peut en écrire une, seul le propriétaire les lit et les efface
+    match /errors/{id} {
+      allow create: if request.resource.data.keys().hasOnly(["kind", "message", "page", "uid", "name", "ua", "at"])
+        && request.resource.data.kind in ["plantage", "refus"]
+        && str(request.resource.data.message, 500) && str(request.resource.data.page, 60)
+        && str(request.resource.data.name, 80) && str(request.resource.data.ua, 200)
+        && request.resource.data.at == request.time
+        && (request.resource.data.uid == null || (signedIn() && request.resource.data.uid == request.auth.uid));
+      allow read, delete: if isOwner();
+      allow update: if false;
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

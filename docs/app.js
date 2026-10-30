@@ -153,6 +153,7 @@
     matchs: '<circle cx="12" cy="12" r="9"/><path d="m12 7 4 3-1.5 5h-5L8 10z"/><path d="M12 3v4M21 10l-5 0M3 10h5M15 15l3 5M9 15l-3 5"/>',
     profil: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
     gerant: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    admin: '<path d="M12 3 4 6v6c0 5 3.4 8.3 8 9.5 4.6-1.2 8-4.5 8-9.5V6z"/><path d="m9 12 2 2 4-4"/>',
   };
   const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
   const PITCH = '<svg class="pitch" viewBox="0 0 400 260" preserveAspectRatio="xMidYMid slice" fill="none" stroke="#fff" stroke-width="2.5"><rect x="12" y="12" width="376" height="236" rx="6"/><path d="M200 12v236"/><circle cx="200" cy="130" r="38"/><circle cx="200" cy="130" r="3" fill="#fff"/><path d="M12 80h50v100H12M388 80h-50v100h50"/><path d="M12 108h-8v44h8M388 108h8v44h-8"/></svg>';
@@ -346,7 +347,7 @@
       </form>`, (el) => {
       el.querySelector("#bookForm").addEventListener("submit", (e) => {
         e.preventDefault();
-        if (findBk(k, h, ti)) { toast("Ce créneau vient d'être pris. Choisissez-en un autre."); closeSheet(); render(); return; }
+        if (findBk(k, h, ti)) { toast("Ce créneau vient d'être pris. Choisissez-en un autre."); logRefus("Réservation refusée : créneau déjà pris"); closeSheet(); render(); return; }
         const name = el.querySelector("#bTeam").value.trim(), phone = el.querySelector("#bPhone").value.trim();
         let team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
         if (!team) { team = { id: "t" + uid(), name, captain: S.me.name || "Capitaine", color: COULEURS[S.teams.length % COULEURS.length], elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, phone }; S.teams.push(team); }
@@ -637,7 +638,7 @@
   /* ---------- Profil ---------- */
   function viewProfil() {
     const t = myTeam();
-    if (!S.me.name) return onboarding();
+    if (!S.me.name || (Compte.enabled && !account)) return onboarding();
     const mt = S.bookings.filter((b) => (b.teamId === S.me.teamId || (t && b.opponent === t.name)) && isPast(b.date, b.hour)).length;
     const roleName = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" }[S.me.role];
     return `<main class="wrap">
@@ -657,13 +658,32 @@
         <div class="card">
           <button class="btn btn-ghost btn-block" id="editProfile">Modifier mon profil</button>
           <button class="btn btn-ghost btn-block" id="resetDemo">Remettre les données de démo</button>
+          ${account ? `<span class="label">Mon identifiant</span><div class="copybox"><code>${esc(account.uid)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(account.uid)}" data-done="Identifiant copié">Copier</button></div>
+          <button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button>` : ""}
           <p class="small muted">Version démo : les données restent sur ce téléphone. Avec Firebase branché, tout le monde verra le même planning en temps réel.</p>
         </div>
       </section>
     </main>`;
   }
 
+  function signInView() {
+    return `<main class="wrap"><section>
+      <h2>Mon compte</h2>
+      <p class="muted">Connectez-vous pour réserver, vous inscrire aux sessions et garder vos stats sur tous vos téléphones.</p>
+      <div class="card">
+        <button class="btn btn-turf btn-block" id="gSignIn">Continuer avec Google</button>
+        <p class="small muted" style="text-align:center">ou avec une adresse e-mail</p>
+        <form id="mailForm" class="list">
+          <div class="field"><label for="lMail">E-mail</label><input class="input" id="lMail" type="email" autocomplete="email" required></div>
+          <div class="field"><label for="lPass">Mot de passe (6 caractères ou plus)</label><input class="input" id="lPass" type="password" autocomplete="current-password" minlength="6" required></div>
+          <div class="row"><button class="btn btn-ghost grow" type="submit" data-mode="in">Me connecter</button><button class="btn btn-ghost grow" type="submit" data-mode="new">Créer mon compte</button></div>
+        </form>
+      </div>
+    </section></main>`;
+  }
+
   function onboarding() {
+    if (Compte.enabled && !account) return signInView();
     const m = S.me;
     return `<main class="wrap"><section>
       <h2>Mon profil</h2>
@@ -863,14 +883,107 @@
     sheet(`${head("Export de la caisse", `${S.receipts.length} reçus`)}<p class="small muted">Si le fichier ne s'est pas téléchargé, copiez le texte et collez-le dans Excel.</p><textarea class="input small" id="csvBox" rows="8" readonly>${esc(csv)}</textarea><button class="btn btn-turf btn-block" data-copy="${esc(csv)}">Copier</button>`);
   }
 
+  /* ---------- Espace propriétaire ---------- */
+  // Réservé au compte PROPRIETAIRE_UID ; les règles Firestore refusent ces lectures à tout autre compte.
+  // Sans Firebase, #admin montre un aperçu avec des comptes fictifs.
+  let account = null, adminData = null, adminTab = "comptes", adminQuery = "";
+  const logRefus = (msg) => Compte.logError("refus", msg);
+  const canAdmin = () => Compte.isOwner() || (!Compte.enabled && location.hash === "#admin");
+  const toDate = (t) => (t && t.toDate ? t.toDate() : t ? new Date(t) : null);
+  const ago = (d) => {
+    if (!d) return "jamais";
+    const m = Math.round((Date.now() - d) / 6e4);
+    if (m < 2) return "à l'instant"; if (m < 60) return `il y a ${m} min`;
+    const h = Math.round(m / 60); if (h < 24) return `il y a ${h} h`;
+    const j = Math.round(h / 24); return j < 31 ? `il y a ${j} j` : `le ${d.getDate()} ${MOIS[d.getMonth()]} ${d.getFullYear()}`;
+  };
+
+  function demoAdmin() {
+    const r = rng(7), now = Date.now();
+    const users = S.dispos.map((p, i) => ({ uid: "demo" + i, name: p.name, email: p.name.split(" ")[0].toLowerCase() + "@exemple.sn", role: i === 0 ? "gerant" : i < 4 ? "capitaine" : "joueur", created: new Date(now - (5 + i * 9) * 864e5), lastSeen: new Date(now - Math.floor(r() * r() * 40 * 864e5)), active: i !== 7 }));
+    const errors = [
+      { id: "e1", kind: "refus", message: "Réservation refusée : créneau déjà pris", page: "planning", name: users[2].name, uid: "demo2", at: new Date(now - 42 * 6e4) },
+      { id: "e2", kind: "plantage", message: "Cannot read properties of undefined (reading 'players') (app.js:612)", page: "matchs", name: users[5].name, uid: "demo5", at: new Date(now - 5 * 36e5) },
+      { id: "e3", kind: "refus", message: "Clé d'entrée incorrecte (gerant)", page: "profil", name: "", uid: null, at: new Date(now - 26 * 36e5) },
+    ];
+    return { users, errors };
+  }
+
+  function loadAdmin() {
+    if (!Compte.enabled) { adminData = demoAdmin(); return; }
+    adminData = { loading: true, users: [], errors: [] };
+    Promise.all([Compte.admin.users(), Compte.admin.errors()])
+      .then(([users, errors]) => { adminData = { users, errors }; })
+      .catch((e) => { adminData = { users: [], errors: [], fail: e.message }; })
+      .then(() => { if (current() === "admin") render(); });
+  }
+
+  function viewAdmin() {
+    if (!canAdmin()) return `<main class="wrap"><section><h2>Accès réservé</h2><div class="empty-state">Cet espace est réservé au propriétaire de l'appli.</div></section></main>`;
+    if (!adminData) loadAdmin();
+    if (adminData.loading) return `<main class="wrap"><section><h2>Espace propriétaire</h2><div class="empty-state">Chargement des comptes...</div></section></main>`;
+    const users = adminData.users.map((u) => ({ ...u, created: toDate(u.created), lastSeen: toDate(u.lastSeen) }));
+    const errors = adminData.errors.map((e) => ({ ...e, at: toDate(e.at) }));
+    const since = (d, days) => d && Date.now() - d < days * 864e5;
+    const day0 = today().getTime();
+    const actifsJour = users.filter((u) => u.lastSeen && u.lastSeen >= day0).length;
+    const q = adminQuery.toLowerCase();
+    const list = users.filter((u) => !q || `${u.name} ${u.email}`.toLowerCase().includes(q));
+    const err24 = errors.filter((e) => since(e.at, 1)).length;
+    const roleName = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" };
+    return `<main class="wrap">
+      <section>
+        <div class="sec-head"><h2>Espace propriétaire</h2><button class="link" id="adminReload">Actualiser</button></div>
+        ${Compte.enabled ? "" : '<p class="small muted">Aperçu avec des comptes fictifs. Avec Firebase branché, seul votre compte voit cette page et ces données.</p>'}
+        ${adminData.fail ? `<div class="empty-state">Lecture refusée : ${esc(adminData.fail)}. Vérifiez que votre identifiant est bien dans les règles Firestore.</div>` : ""}
+        <div class="kpis">
+          <div class="kpi lead"><span class="label">Comptes inscrits</span><b class="num">${users.length}</b><span class="small">${users.filter((u) => since(u.created, 7)).length} nouveaux cette semaine · ${users.filter((u) => u.active === false).length} suspendu${users.filter((u) => u.active === false).length > 1 ? "s" : ""}</span></div>
+          <div class="kpi"><span class="label">Actifs aujourd'hui</span><b class="num">${actifsJour}</b></div>
+          <div class="kpi"><span class="label">Actifs 7 jours</span><b class="num">${users.filter((u) => since(u.lastSeen, 7)).length}</b></div>
+          <div class="kpi"><span class="label">Actifs 30 jours</span><b class="num">${users.filter((u) => since(u.lastSeen, 30)).length}</b></div>
+          <div class="kpi"><span class="label">Erreurs 24 h</span><b class="num" style="color:${err24 ? "var(--bad)" : "inherit"}">${err24}</b></div>
+        </div>
+        <div class="seg" role="group" style="grid-template-columns:1fr 1fr"><button data-atab="comptes" aria-pressed="${adminTab === "comptes"}">Comptes</button><button data-atab="erreurs" aria-pressed="${adminTab === "erreurs"}">Erreurs (${errors.length})</button></div>
+        ${adminTab === "comptes" ? `
+          <input class="input" id="adminSearch" type="search" placeholder="Chercher un nom ou un e-mail" value="${esc(adminQuery)}">
+          <div class="list">${list.length ? list.map((u) => `<div class="card">
+            <div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span><div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(u.email || u.uid)}</div></div>${u.active === false ? '<span class="chip chip-bad">Suspendu</span>' : since(u.lastSeen, 30) ? '<span class="chip chip-ok">Actif</span>' : '<span class="chip chip-n">Inactif</span>'}</div>
+            <div class="small muted">${esc(roleName[u.role] || "Joueur")} · inscrit ${ago(u.created)} · vu ${ago(u.lastSeen)}</div>
+            ${u.uid === (account && account.uid) ? "" : `<button class="btn ${u.active === false ? "btn-turf" : "btn-ghost"} btn-sm" data-toggle="${esc(u.uid)}" data-active="${u.active === false ? "1" : "0"}">${u.active === false ? "Réactiver le compte" : "Suspendre le compte"}</button>`}
+          </div>`).join("") : '<div class="empty-state">Aucun compte ne correspond.</div>'}</div>`
+        : `<p class="small muted">Plantages de l'appli et actions refusées chez les clients, les plus récents en premier.</p>
+          <div class="list">${errors.length ? errors.map((e) => `<div class="card">
+            <div class="row">${e.kind === "plantage" ? '<span class="chip chip-bad">Plantage</span>' : '<span class="chip chip-warn">Refus</span>'}<span class="small muted">${ago(e.at)} · page ${esc(e.page)}</span><button class="link" style="margin-left:auto" data-delerr="${esc(e.id)}">Effacer</button></div>
+            <p style="overflow-wrap:anywhere">${esc(e.message)}</p>
+            <p class="small muted">${e.uid ? `Compte : ${esc(e.name || e.uid)}` : "Visiteur non connecté"}${e.ua ? ` · ${esc(/iPhone|iPad/.test(e.ua) ? "iPhone" : /Android/.test(e.ua) ? "Android" : "Ordinateur")}` : ""}</p>
+          </div>`).join("") : '<div class="empty-state">Aucune erreur enregistrée.</div>'}</div>`}
+      </section>
+    </main>`;
+  }
+
+  function toggleAccount(uid, active) {
+    const u = adminData.users.find((x) => x.uid === uid);
+    if (!Compte.enabled) { u.active = active; render(); toast(active ? "Compte réactivé" : "Compte suspendu"); return; }
+    Compte.admin.setActive(uid, active).then(() => { u.active = active; render(); toast(active ? "Compte réactivé" : "Compte suspendu"); }, (e) => toast("Refusé : " + e.message));
+  }
+
+  function suspendedView() {
+    return `<main class="wrap"><section><h2>Compte suspendu</h2><div class="empty-state">Votre compte est suspendu pour le moment. Contactez ${esc(C.nomCourt)} au ${esc(C.telephone)} pour le réactiver.</div><button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button></section></main>`;
+  }
+
   /* ---------- Navigation et événements ---------- */
-  const VIEWS = { accueil: viewAccueil, planning: viewPlanning, matchs: viewMatchs, profil: viewProfil, gerant: viewGerant };
-  const LABELS = { accueil: "Accueil", planning: "Planning", matchs: "Jouer", profil: "Profil", gerant: "Gérant" };
+  const VIEWS = { accueil: viewAccueil, planning: viewPlanning, matchs: viewMatchs, profil: viewProfil, gerant: viewGerant, admin: viewAdmin };
+  const LABELS = { accueil: "Accueil", planning: "Planning", matchs: "Jouer", profil: "Profil", gerant: "Gérant", admin: "Admin" };
   const current = () => { const h = location.hash.slice(1); return VIEWS[h] ? h : "accueil"; };
 
   function render() {
     const v = current();
-    const tabs = isStaff() ? Object.keys(VIEWS) : Object.keys(VIEWS).filter((k) => k !== "gerant");
+    const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "admin" || canAdmin()));
+    if (account && !account.active) {
+      $("#app").innerHTML = `<header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span></div></header>${suspendedView()}`;
+      $("#signOut").addEventListener("click", () => Compte.signOut().then(() => { account = null; render(); }));
+      return;
+    }
     $("#app").innerHTML = `
       <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div></header>
       ${VIEWS[v]()}
@@ -888,9 +1001,10 @@
       f.addEventListener("submit", (e) => {
         e.preventDefault();
         const role = f.querySelector("[name=mRole]:checked").value, key = ($("#mKey").value || "").trim().toUpperCase();
-        if ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel)) { toast("Clé d'entrée incorrecte"); return; }
+        if ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel)) { toast("Clé d'entrée incorrecte"); logRefus(`Clé d'entrée incorrecte (${role})`); return; }
         Object.assign(S.me, { name: $("#mName").value.trim(), poste: f.querySelector("[name=mPoste]:checked").value, teamId: $("#mTeam").value, role });
-        save(); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render(); toast("Profil enregistré");
+        save();
+        if (account) Compte.saveProfile({ name: S.me.name, role, poste: S.me.poste }).catch(() => toast("Profil gardé sur ce téléphone, l'envoi en ligne a échoué")); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render(); toast("Profil enregistré");
       });
     }
     const on = (sel, fn) => app.querySelectorAll(sel).forEach((el) => el.addEventListener("click", (e) => fn(el, e)));
@@ -925,11 +1039,30 @@
     on("[data-absent]", (el) => { S.bookings.find((x) => x.id === el.dataset.absent).status = "absent"; save(); render(); });
     on("[data-score]", (el) => scoreSheet(el.dataset.score));
     on("#exportCsv", exportCsv);
+    on("[data-atab]", (el) => { adminTab = el.dataset.atab; render(); });
+    on("#adminReload", () => { adminData = null; render(); });
+    on("[data-toggle]", (el) => toggleAccount(el.dataset.toggle, el.dataset.active === "1"));
+    on("[data-delerr]", (el) => {
+      const id = el.dataset.delerr, drop = () => { adminData.errors = adminData.errors.filter((e) => e.id !== id); render(); };
+      Compte.enabled ? Compte.admin.deleteError(id).then(drop, (e) => toast("Refusé : " + e.message)) : drop();
+    });
+    const search = $("#adminSearch");
+    search && search.addEventListener("input", () => { adminQuery = search.value; const pos = search.selectionStart; render(); const s2 = $("#adminSearch"); s2.focus(); s2.setSelectionRange(pos, pos); });
+    on("#signOut", () => Compte.signOut().then(() => { account = null; adminData = null; location.hash = "profil"; render(); toast("Déconnecté"); }));
+    const signedIn = (p) => { account = p; if (p) { S.me.name = S.me.name || p.name; if (p.role && p.role !== "gerant" && p.role !== "personnel") S.me.role = p.role; save(); } render(); };
+    const authFail = (e) => { logRefus("Connexion refusée : " + (e.code || e.message)); toast(/wrong-password|invalid-credential|user-not-found/.test(e.code || "") ? "E-mail ou mot de passe incorrect" : /email-already/.test(e.code || "") ? "Ce compte existe déjà, connectez-vous" : "Connexion impossible : " + (e.code || e.message)); };
+    on("#gSignIn", () => Compte.signIn().then((p) => p && signedIn(p), authFail));
+    const mf = $("#mailForm");
+    mf && mf.addEventListener("submit", (e) => {
+      e.preventDefault();
+      Compte.signInEmail($("#lMail").value.trim(), $("#lPass").value, e.submitter && e.submitter.dataset.mode === "new").then(signedIn, authFail);
+    });
   }
   let pendingDefi = false;
 
-  window.addEventListener("hashchange", () => { closeSheet(); render(); window.scrollTo(0, 0); });
+  window.addEventListener("hashchange", () => { closeSheet(); if (current() === "admin") adminData = null; render(); window.scrollTo(0, 0); });
   render();
+  if (Compte.enabled) Compte.start().then((p) => { account = p; if (p) { S.me.name = S.me.name || p.name; save(); } render(); }, (e) => { console.warn(e); toast("Connexion au serveur impossible, l'appli continue sur ce téléphone"); });
   setInterval(() => { if (current() === "planning" && !$("#scrim")) render(); }, 60000);
   if ("serviceWorker" in navigator && location.protocol === "https:" && window.top === window) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

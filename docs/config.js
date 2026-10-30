@@ -52,4 +52,6 @@ window.MOMO_CONFIG = {
 
   // Vide = l'appli tourne sur le téléphone avec des données de démo.
   FIREBASE_CONFIG: null,
+  // Identifiant Firebase du propriétaire de l'appli : lui seul ouvre l'espace admin (le même dans firestore.rules).
+  PROPRIETAIRE_UID: "",
 };
