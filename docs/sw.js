@@ -1,5 +1,5 @@
 // Garde l'appli disponible hors connexion : on sert le cache, puis on le rafraîchit en arrière-plan.
-const CACHE = "momo-foot-v4";
+const CACHE = "momo-foot-v5";
 const FILES = ["./", "index.html", "app.css", "config.js", "app.js", "qrcode.js", "compte.js", "affiche.html", "manifest.webmanifest", "icons/logo.svg"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));

@@ -59,6 +59,10 @@ window.MOMO_CONFIG = {
     messagingSenderId: "149658617883",
     appId: "1:149658617883:web:df118ffa3dad7a85cb90be",
   },
-  // Identifiant Firebase du propriétaire de l'appli : lui seul ouvre l'espace admin (le même dans firestore.rules).
-  PROPRIETAIRE_UID: "",
+  // Identifiants Firebase des admins de l'appli (le propriétaire qui la vend) : eux seuls ouvrent #admin.
+  // Les mêmes identifiants vont dans la fonction admin() de firestore.rules. Jamais d'e-mail ici.
+  // Les quatre écritures du même identifiant (lettre O ou chiffre 0, illisibles sur la capture) : seule la vraie existe.
+  admins: ["aHnLVoNHOmfw70vwDdAaVmWPhMT2", "aHnLVoNH0mfw70vwDdAaVmWPhMT2", "aHnLVoNHOmfw7OvwDdAaVmWPhMT2", "aHnLVoNH0mfw7OvwDdAaVmWPhMT2"],
+  // Équipe à contacter quand un compte est suspendu
+  supportTel: "78 272 19 20",
 };

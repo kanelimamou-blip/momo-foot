@@ -12,15 +12,15 @@ En ligne : https://kanelimamou-blip.github.io/momo-foot/
 - `docs/app.js` : l'appli. Sans `FIREBASE_CONFIG`, les données restent sur le téléphone et l'appli démarre avec des données de démo.
 - `docs/app.css`, `docs/index.html`, `docs/manifest.webmanifest`, `docs/sw.js` (hors connexion).
 
-## Comptes et espace propriétaire
+## Comptes et espace admin
 
-`docs/compte.js` : connexion Google ou e-mail (Firebase Auth) et fiche de chaque compte dans Firestore (`users/{uid}` : nom, e-mail, date d'inscription et dernière activité fixées par le serveur, actif ou suspendu). Les plantages et les actions refusées sont écrits dans `errors` (quel compte, quelle page, quand). Tant que `FIREBASE_CONFIG` est vide dans `docs/config.js`, l'appli marche sans compte.
+`docs/compte.js` : connexion Google ou e-mail (Firebase Auth) et fiche de chaque compte dans Firestore (`users/{uid}` : nom, téléphone, quartier, rôle, date d'inscription et dernière activité fixées par le serveur, nombre d'actions par jour sur 14 jours, actif ou suspendu). Les plantages et les écritures refusées partent dans `erreurs` (message, écran, compte, rôle, téléphone ; 5 au plus par visite). Tant que `FIREBASE_CONFIG` est vide dans `docs/config.js`, l'appli marche sans compte.
 
-L'onglet Admin (`#admin`) n'apparaît que pour le compte `PROPRIETAIRE_UID` : liste des comptes, chiffres d'utilisation (jour, 7 jours, 30 jours), journal des erreurs et bouton pour suspendre ou réactiver un compte. Un compte suspendu voit seulement un message et ne peut plus écrire. Sans Firebase, `#admin` montre un aperçu avec des comptes fictifs.
+`#admin` est réservé aux identifiants de la liste `admins` de `docs/config.js` (et de la fonction `admin()` de `firestore.rules`). Non connecté, la page propose la connexion ; connecté sans être admin, elle affiche l'identifiant à copier. L'admin y voit les clients avec leur état (Actif, Nouveau, Inactif, Suspendu), une recherche et des filtres, les chiffres (inscrits, actifs cette semaine, inactifs, erreurs des 7 jours), les erreurs à effacer, et pour chaque client les boutons Suspendre/Réactiver, WhatsApp et Voir (l'appli avec le rôle du client, en lecture seule). Le mode présentation charge des données d'exemple et une barre en haut pour passer de joueur à capitaine, personnel ou gérant. Un client suspendu voit « suspendu, contactez l'équipe au 78 272 19 20 » et les règles lui refusent toute écriture, y compris lever sa suspension.
 
-`firestore.rules` : règles à coller dans la console Firebase après y avoir mis l'identifiant du propriétaire. `npm run test:regles` les teste sur l'émulateur Firebase (30 cas : un client ne lit que sa fiche, ne change jamais son statut, seul le propriétaire lit les comptes et le journal...).
+Pas de paiement de licence dans l'appli ni de blocage automatique : le propriétaire encaisse les abonnements lui-même. Les paiements Wave des joueurs (acomptes, places en session, abonnement joueur) sont ceux du complexe et ne bloquent rien.
 
-Pas de paiement de licence dans l'appli : le propriétaire encaisse lui-même. Les paiements Wave des joueurs (acomptes, places en session, abonnement joueur) restent ceux du complexe et ne bloquent rien automatiquement.
+Tests (émulateurs Firebase) : `npm run test:regles` (34 cas sur les règles) et `tests/e2e.cjs` (22 vérifications de bout en bout : connexion admin, liste, erreur remontée, suspension, client qui ne lit pas les erreurs et ne se réactive pas, vue d'un client en lecture seule, passage d'un rôle à l'autre en présentation).
 
 ## Clés de démo
 

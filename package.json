@@ -3,11 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:regles": "firebase emulators:exec --only firestore --project demo-momo-foot \"node tests/regles.test.mjs\""
+    "test:regles": "firebase emulators:exec --only firestore --project demo-momo-foot \"node tests/regles.test.mjs\"",
+    "test:e2e": "node tests/e2e.cjs http://localhost:8768 ."
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.0",
     "firebase": "^12.0.0",
-    "firebase-tools": "^15.0.0"
+    "firebase-tools": "^15.0.0",
+    "playwright": "^1.48.0"
   }
 }

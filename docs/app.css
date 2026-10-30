@@ -260,3 +260,14 @@ textarea.input { padding: 10px 12px; min-height: 80px; }
 .qr-wrap svg { display: block; width: 100%; height: auto; }
 .qr-wrap svg rect[fill="#ffffff"], .qr-wrap svg rect[fill="white"] { fill: #FFFFFF; }
 .qr-big { width: min(340px, 100%); }
+
+/* Espace admin : filtres et barre de vue client ou de présentation */
+.fchip { border: 1.5px solid var(--line); background: var(--surface); border-radius: 999px; min-height: 38px; padding: 0 12px; font-weight: 600; font-size: .88rem; display: inline-flex; align-items: center; gap: 6px; }
+.fchip span { color: var(--muted); }
+.fchip[aria-pressed="true"] { background: var(--turf); border-color: var(--turf); color: var(--on-turf); }
+.fchip[aria-pressed="true"] span { color: inherit; opacity: .85; }
+.fchip-sm { min-height: 30px; padding: 0 10px; font-size: .8rem; border-color: rgba(255, 255, 255, .35); background: transparent; color: inherit; }
+.modebar { background: var(--bib); color: var(--on-bib); }
+.modebar .wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-block: 6px; }
+.modebar .iconbtn { margin-left: auto; width: 30px; height: 30px; font-size: 1.1rem; }
+.modebar .fchip[aria-pressed="true"] { background: var(--on-bib); color: var(--bib); border-color: var(--on-bib); }

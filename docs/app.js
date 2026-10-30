@@ -131,7 +131,8 @@
   try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) { S = null; }
   if (!S || S.v !== 2) S = seed();
   ensureSessions(S);
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* stockage bloqué : la session continue en mémoire */ } };
+  // En vue d'un client ou en présentation, rien n'est enregistré sur ce téléphone
+  const save = () => { if (mode) return; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* stockage bloqué : la session continue en mémoire */ } };
 
   // Les créneaux en attente d'acompte se libèrent tout seuls après le délai.
   function expireHolds() {
@@ -355,7 +356,7 @@
         const rec = el.querySelector("#bRec").checked;
         const base = { team: team.name, teamId: team.id, phone, opponent: "", type: el.querySelector("[name=bType]:checked").value, niveau: el.querySelector("[name=bLvl]:checked").value, status: "attente", mine: true, recurrent: rec, createdAt: Date.now() };
         const bk = { id: uid(), date: k, hour: h, terrain: ti, price: price(k, h), ...base };
-        S.bookings.push(bk);
+        S.bookings.push(bk); act();
         if (rec) for (let w = 1; w <= 3; w++) { const kk = dkey(addDays(fromKey(k), 7 * w)); if (!findBk(kk, h, ti)) S.bookings.push({ ...base, id: uid(), date: kk, hour: h, terrain: ti, price: price(kk, h), status: "confirme" }); }
         save(); paySheet(bk.id); render();
       });
@@ -420,7 +421,7 @@
         let team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
         if (!team) { team = { id: "t" + uid(), name, captain: S.me.name || "Capitaine", color: COULEURS[S.teams.length % COULEURS.length], elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, phone: "" }; S.teams.push(team); }
         if (!S.me.teamId) S.me.teamId = team.id;
-        b.opponent = team.name; b.opponentMine = true; save(); closeSheet(); render();
+        b.opponent = team.name; b.opponentMine = true; act(); save(); closeSheet(); render();
         toast(`Match calé : ${b.team} vs ${team.name}`);
       });
     });
@@ -472,7 +473,7 @@
       el.querySelector("#needForm").addEventListener("submit", (e) => {
         e.preventDefault();
         const b = S.bookings.find((x) => x.id === el.querySelector("#nBk").value);
-        S.needs.unshift({ id: uid(), bookingId: b.id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: +el.querySelector("#nMiss").value, poste: el.querySelector("[name=nPoste]:checked").value, joined: [], mine: true });
+        act(); S.needs.unshift({ id: uid(), bookingId: b.id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: +el.querySelector("#nMiss").value, poste: el.querySelector("[name=nPoste]:checked").value, joined: [], mine: true });
         save(); closeSheet(); seg = "joueurs"; render(); toast("Annonce publiée");
       });
     });
@@ -569,7 +570,7 @@
       : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
         <p class="small muted">Payez votre place par Wave pour la garder. Si la session n'atteint pas ${C.sessions.minJoueurs} joueurs, vous êtes remboursé.</p>`}`, (el) => {
       const j = el.querySelector("#jJoin"), l = el.querySelector("#jLeave"), pd = el.querySelector("#jPaid");
-      j && j.addEventListener("click", () => { b.players.push({ name: S.me.name, poste: S.me.poste, paid: false, abonne: S.me.abonne }); b.price = sessionTotal(b); save(); render(); joinSheet(id); toast(b.players.length >= C.sessions.minJoueurs ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${C.sessions.minJoueurs - b.players.length} joueurs`); });
+      j && j.addEventListener("click", () => { act(); b.players.push({ name: S.me.name, poste: S.me.poste, paid: false, abonne: S.me.abonne }); b.price = sessionTotal(b); save(); render(); joinSheet(id); toast(b.players.length >= C.sessions.minJoueurs ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${C.sessions.minJoueurs - b.players.length} joueurs`); });
       l && l.addEventListener("click", () => { b.players = b.players.filter((p) => p.name !== S.me.name); b.price = sessionTotal(b); save(); closeSheet(); render(); toast("Désinscrit"); });
       pd && pd.addEventListener("click", () => { me.paid = true; save(); closeSheet(); render(); toast("Place payée, à bientôt sur le terrain"); });
     });
@@ -660,7 +661,7 @@
           <button class="btn btn-ghost btn-block" id="resetDemo">Remettre les données de démo</button>
           ${account ? `<span class="label">Mon identifiant</span><div class="copybox"><code>${esc(account.uid)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(account.uid)}" data-done="Identifiant copié">Copier</button></div>
           <button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button>` : ""}
-          <p class="small muted">Version démo : les données restent sur ce téléphone. Avec Firebase branché, tout le monde verra le même planning en temps réel.</p>
+          <p class="small muted">${account ? "Votre compte est enregistré en ligne. Le planning et les sessions restent pour l'instant sur ce téléphone, avec des données de démo." : "Version démo : les données restent sur ce téléphone."}</p>
         </div>
       </section>
     </main>`;
@@ -670,7 +671,11 @@
     return `<main class="wrap"><section>
       <h2>Mon compte</h2>
       <p class="muted">Connectez-vous pour réserver, vous inscrire aux sessions et garder vos stats sur tous vos téléphones.</p>
-      <div class="card">
+      ${signInCard()}
+    </section></main>`;
+  }
+  function signInCard() {
+    return `<div class="card">
         <button class="btn btn-turf btn-block" id="gSignIn">Continuer avec Google</button>
         <p class="small muted" style="text-align:center">ou avec une adresse e-mail</p>
         <form id="mailForm" class="list">
@@ -678,8 +683,7 @@
           <div class="field"><label for="lPass">Mot de passe (6 caractères ou plus)</label><input class="input" id="lPass" type="password" autocomplete="current-password" minlength="6" required></div>
           <div class="row"><button class="btn btn-ghost grow" type="submit" data-mode="in">Me connecter</button><button class="btn btn-ghost grow" type="submit" data-mode="new">Créer mon compte</button></div>
         </form>
-      </div>
-    </section></main>`;
+      </div>`;
   }
 
   function onboarding() {
@@ -694,6 +698,8 @@
         <div class="field"><label for="mTeam">Équipe</label><select class="input" id="mTeam"><option value="">Pas encore d'équipe</option>${S.teams.map((t) => `<option value="${t.id}" ${t.id === m.teamId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
         <div class="field"><span class="label">Je suis</span><div class="choices">${[["joueur", "Joueur"], ["capitaine", "Capitaine"], ["personnel", "Personnel"], ["gerant", "Gérant"]].map(([k, l]) => `<label class="choice"><input type="radio" name="mRole" value="${k}" ${m.role === k ? "checked" : ""}><span>${l}</span></label>`).join("")}</div></div>
         <div class="field" id="keyField" hidden><label for="mKey">Clé d'entrée</label><input class="input" id="mKey" autocomplete="off" placeholder="Donnée par le complexe"><span class="small muted">Démo : ${esc(C.cles.gerant)} pour le gérant, ${esc(C.cles.personnel)} pour le personnel.</span></div>
+        ${account ? `<div class="row"><div class="field grow"><label for="mTel">Téléphone</label><input class="input" id="mTel" inputmode="tel" value="${esc(account.tel)}" placeholder="77 123 45 67"></div>
+        <div class="field grow"><label for="mQuartier">Quartier</label><input class="input" id="mQuartier" value="${esc(account.quartier)}"></div></div>` : ""}
         <button class="btn btn-bib btn-block" type="submit">Enregistrer</button>
       </form>
     </section></main>`;
@@ -883,12 +889,17 @@
     sheet(`${head("Export de la caisse", `${S.receipts.length} reçus`)}<p class="small muted">Si le fichier ne s'est pas téléchargé, copiez le texte et collez-le dans Excel.</p><textarea class="input small" id="csvBox" rows="8" readonly>${esc(csv)}</textarea><button class="btn btn-turf btn-block" data-copy="${esc(csv)}">Copier</button>`);
   }
 
-  /* ---------- Espace propriétaire ---------- */
-  // Réservé au compte PROPRIETAIRE_UID ; les règles Firestore refusent ces lectures à tout autre compte.
+  /* ---------- Espace admin ---------- */
+  // Réservé aux comptes listés dans C.admins ; les règles Firestore refusent ces lectures à tout autre compte.
   // Sans Firebase, #admin montre un aperçu avec des comptes fictifs.
-  let account = null, adminData = null, adminTab = "comptes", adminQuery = "";
+  let account = null, adminData = null, adminQuery = "", adminFilter = "tous";
+  // mode : null, { type: "voir", who } (l'appli comme un client la voit, lecture seule) ou { type: "demo" } (présentation)
+  let mode = null, realS = null;
+  const act = () => { if (!mode) Compte.track(); };
   const logRefus = (msg) => Compte.logError("refus", msg);
-  const canAdmin = () => Compte.isOwner() || (!Compte.enabled && location.hash === "#admin");
+  Compte.setRole(() => S.me.role);
+  const canAdmin = () => Compte.isAdmin() || (!Compte.enabled && location.hash === "#admin");
+  const ROLE_NAMES = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" };
   const toDate = (t) => (t && t.toDate ? t.toDate() : t ? new Date(t) : null);
   const ago = (d) => {
     if (!d) return "jamais";
@@ -897,14 +908,22 @@
     const h = Math.round(m / 60); if (h < 24) return `il y a ${h} h`;
     const j = Math.round(h / 24); return j < 31 ? `il y a ${j} j` : `le ${d.getDate()} ${MOIS[d.getMonth()]} ${d.getFullYear()}`;
   };
+  const week = (u) => { const lim = dkey(addDays(today(), -6)); return Object.entries(u.activite || {}).reduce((n, [d, c]) => (d >= lim ? n + c : n), 0); };
+  // Actif : des actions ces 7 derniers jours ; Nouveau : inscrit depuis moins de 7 jours ; sinon Inactif
+  const userState = (u) => (!u.active ? ["Suspendu", "bad"] : week(u) > 0 ? ["Actif", "ok"] : u.created && Date.now() - u.created < 7 * 864e5 ? ["Nouveau", "warn"] : ["Inactif", "n"]);
+  const telWa = (t) => { const d = String(t || "").replace(/\D/g, ""); return d.length === 9 ? "221" + d : d; };
 
   function demoAdmin() {
-    const r = rng(7), now = Date.now();
-    const users = S.dispos.map((p, i) => ({ uid: "demo" + i, name: p.name, email: p.name.split(" ")[0].toLowerCase() + "@exemple.sn", role: i === 0 ? "gerant" : i < 4 ? "capitaine" : "joueur", created: new Date(now - (5 + i * 9) * 864e5), lastSeen: new Date(now - Math.floor(r() * r() * 40 * 864e5)), active: i !== 7 }));
+    const r = rng(7), now = Date.now(), quartiers = ["Médina", "Grand Yoff", "Parcelles", "Sicap", "HLM", "Ouakam"];
+    const users = S.dispos.map((p, i) => {
+      const activite = {};
+      for (let d = 0; d < 7; d++) if (i % 4 && r() < 0.45) activite[dkey(addDays(today(), -d))] = 1 + Math.floor(r() * 3);
+      return { uid: "demo" + i, name: p.name, email: "", tel: `77 ${pad(10 + i)} ${pad(20 + i)} ${pad(30 + i)}`, quartier: quartiers[i % quartiers.length], role: i === 0 ? "gerant" : i === 1 ? "personnel" : i < 5 ? "capitaine" : "joueur", poste: p.poste,
+        created: new Date(now - (2 + i * 5) * 864e5), lastSeen: new Date(now - Math.floor(r() * 9 * 864e5)), active: i !== 7, activite };
+    });
     const errors = [
-      { id: "e1", kind: "refus", message: "Réservation refusée : créneau déjà pris", page: "planning", name: users[2].name, uid: "demo2", at: new Date(now - 42 * 6e4) },
-      { id: "e2", kind: "plantage", message: "Cannot read properties of undefined (reading 'players') (app.js:612)", page: "matchs", name: users[5].name, uid: "demo5", at: new Date(now - 5 * 36e5) },
-      { id: "e3", kind: "refus", message: "Clé d'entrée incorrecte (gerant)", page: "profil", name: "", uid: null, at: new Date(now - 26 * 36e5) },
+      { id: "e1", kind: "refus", msg: "Réservation refusée : créneau déjà pris", route: "planning", name: users[2].name, role: "capitaine", uid: "demo2", ua: "Android", at: new Date(now - 42 * 6e4) },
+      { id: "e2", kind: "plantage", msg: "Cannot read properties of undefined (reading 'players') (app.js:612)", route: "matchs", name: users[5].name, role: "joueur", uid: "demo5", ua: "iPhone", at: new Date(now - 5 * 36e5) },
     ];
     return { users, errors };
   }
@@ -912,63 +931,110 @@
   function loadAdmin() {
     if (!Compte.enabled) { adminData = demoAdmin(); return; }
     adminData = { loading: true, users: [], errors: [] };
-    Promise.all([Compte.admin.users(), Compte.admin.errors()])
+    Promise.all([Compte.admin.users(), Compte.admin.errors(Date.now() - 7 * 864e5)])
       .then(([users, errors]) => { adminData = { users, errors }; })
       .catch((e) => { adminData = { users: [], errors: [], fail: e.message }; })
       .then(() => { if (current() === "admin") render(); });
   }
 
   function viewAdmin() {
-    if (!canAdmin()) return `<main class="wrap"><section><h2>Accès réservé</h2><div class="empty-state">Cet espace est réservé au propriétaire de l'appli.</div></section></main>`;
+    const shell = (body) => `<main class="wrap"><section><h2>Espace admin</h2>${body}</section></main>`;
+    if (Compte.enabled && !account) return shell(`<p class="muted">Connectez-vous avec votre compte pour superviser l'appli.</p>${signInCard()}`);
+    if (!canAdmin()) return shell(`<div class="card"><p>Ce compte n'est pas encore administrateur.</p><span class="label">Votre identifiant</span>
+      <div class="copybox"><code id="adUid">${esc(account ? account.uid : "")}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(account ? account.uid : "")}" data-done="Identifiant copié">Copier</button></div>
+      <p class="small muted">Envoyez-le pour qu'il soit ajouté dans l'appli et dans les règles Firebase.</p></div>`);
     if (!adminData) loadAdmin();
-    if (adminData.loading) return `<main class="wrap"><section><h2>Espace propriétaire</h2><div class="empty-state">Chargement des comptes...</div></section></main>`;
+    if (adminData.loading) return shell('<div class="empty-state">Chargement des comptes...</div>');
     const users = adminData.users.map((u) => ({ ...u, created: toDate(u.created), lastSeen: toDate(u.lastSeen) }));
     const errors = adminData.errors.map((e) => ({ ...e, at: toDate(e.at) }));
-    const since = (d, days) => d && Date.now() - d < days * 864e5;
-    const day0 = today().getTime();
-    const actifsJour = users.filter((u) => u.lastSeen && u.lastSeen >= day0).length;
+    const count = (st) => users.filter((u) => userState(u)[0] === st).length;
     const q = adminQuery.toLowerCase();
-    const list = users.filter((u) => !q || `${u.name} ${u.email}`.toLowerCase().includes(q));
-    const err24 = errors.filter((e) => since(e.at, 1)).length;
-    const roleName = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" };
+    const FILTERS = [["tous", "Tous"], ["Actif", "Actifs"], ["Nouveau", "Nouveaux"], ["Inactif", "Inactifs"], ["Suspendu", "Suspendus"]];
+    const list = users.filter((u) => (adminFilter === "tous" || userState(u)[0] === adminFilter) && (!q || `${u.name} ${u.quartier} ${u.tel} ${u.email}`.toLowerCase().includes(q)));
     return `<main class="wrap">
       <section>
-        <div class="sec-head"><h2>Espace propriétaire</h2><button class="link" id="adminReload">Actualiser</button></div>
+        <div class="sec-head"><h2>Espace admin</h2><button class="link" id="adminReload">Actualiser</button></div>
         ${Compte.enabled ? "" : '<p class="small muted">Aperçu avec des comptes fictifs. Avec Firebase branché, seul votre compte voit cette page et ces données.</p>'}
         ${adminData.fail ? `<div class="empty-state">Lecture refusée : ${esc(adminData.fail)}. Vérifiez que votre identifiant est bien dans les règles Firestore.</div>` : ""}
         <div class="kpis">
-          <div class="kpi lead"><span class="label">Comptes inscrits</span><b class="num">${users.length}</b><span class="small">${users.filter((u) => since(u.created, 7)).length} nouveaux cette semaine · ${users.filter((u) => u.active === false).length} suspendu${users.filter((u) => u.active === false).length > 1 ? "s" : ""}</span></div>
-          <div class="kpi"><span class="label">Actifs aujourd'hui</span><b class="num">${actifsJour}</b></div>
-          <div class="kpi"><span class="label">Actifs 7 jours</span><b class="num">${users.filter((u) => since(u.lastSeen, 7)).length}</b></div>
-          <div class="kpi"><span class="label">Actifs 30 jours</span><b class="num">${users.filter((u) => since(u.lastSeen, 30)).length}</b></div>
-          <div class="kpi"><span class="label">Erreurs 24 h</span><b class="num" style="color:${err24 ? "var(--bad)" : "inherit"}">${err24}</b></div>
+          <div class="kpi"><span class="label">Inscrits</span><b class="num">${users.length}</b></div>
+          <div class="kpi"><span class="label">Actifs cette semaine</span><b class="num">${count("Actif")}</b></div>
+          <div class="kpi"><span class="label">Inactifs</span><b class="num">${count("Inactif")}</b></div>
+          <div class="kpi"><span class="label">Erreurs (7 j)</span><b class="num" style="color:${errors.length ? "var(--bad)" : "inherit"}">${errors.length}</b></div>
         </div>
-        <div class="seg" role="group" style="grid-template-columns:1fr 1fr"><button data-atab="comptes" aria-pressed="${adminTab === "comptes"}">Comptes</button><button data-atab="erreurs" aria-pressed="${adminTab === "erreurs"}">Erreurs (${errors.length})</button></div>
-        ${adminTab === "comptes" ? `
-          <input class="input" id="adminSearch" type="search" placeholder="Chercher un nom ou un e-mail" value="${esc(adminQuery)}">
-          <div class="list">${list.length ? list.map((u) => `<div class="card">
-            <div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span><div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(u.email || u.uid)}</div></div>${u.active === false ? '<span class="chip chip-bad">Suspendu</span>' : since(u.lastSeen, 30) ? '<span class="chip chip-ok">Actif</span>' : '<span class="chip chip-n">Inactif</span>'}</div>
-            <div class="small muted">${esc(roleName[u.role] || "Joueur")} · inscrit ${ago(u.created)} · vu ${ago(u.lastSeen)}</div>
-            ${u.uid === (account && account.uid) ? "" : `<button class="btn ${u.active === false ? "btn-turf" : "btn-ghost"} btn-sm" data-toggle="${esc(u.uid)}" data-active="${u.active === false ? "1" : "0"}">${u.active === false ? "Réactiver le compte" : "Suspendre le compte"}</button>`}
-          </div>`).join("") : '<div class="empty-state">Aucun compte ne correspond.</div>'}</div>`
-        : `<p class="small muted">Plantages de l'appli et actions refusées chez les clients, les plus récents en premier.</p>
-          <div class="list">${errors.length ? errors.map((e) => `<div class="card">
-            <div class="row">${e.kind === "plantage" ? '<span class="chip chip-bad">Plantage</span>' : '<span class="chip chip-warn">Refus</span>'}<span class="small muted">${ago(e.at)} · page ${esc(e.page)}</span><button class="link" style="margin-left:auto" data-delerr="${esc(e.id)}">Effacer</button></div>
-            <p style="overflow-wrap:anywhere">${esc(e.message)}</p>
-            <p class="small muted">${e.uid ? `Compte : ${esc(e.name || e.uid)}` : "Visiteur non connecté"}${e.ua ? ` · ${esc(/iPhone|iPad/.test(e.ua) ? "iPhone" : /Android/.test(e.ua) ? "Android" : "Ordinateur")}` : ""}</p>
-          </div>`).join("") : '<div class="empty-state">Aucune erreur enregistrée.</div>'}</div>`}
+        <div class="card">
+          <h3>Mode présentation</h3>
+          <p class="small muted">Montrez l'appli sur votre seul téléphone, avec des données d'exemple : la barre en haut de l'écran passe de joueur à capitaine, personnel ou gérant.</p>
+          <button class="btn btn-turf btn-block" id="startDemo">Lancer la présentation</button>
+        </div>
+      </section>
+      <section>
+        <h2>Clients</h2>
+        <input class="input" id="adminSearch" type="search" placeholder="Chercher un nom, un quartier, un téléphone" value="${esc(adminQuery)}">
+        <div class="choices" role="group" aria-label="Filtrer par état">${FILTERS.map(([k, l]) => `<button class="fchip" data-afilter="${k}" aria-pressed="${adminFilter === k}">${l} <span class="num">${k === "tous" ? users.length : count(k)}</span></button>`).join("")}</div>
+        <div class="list">${list.length ? list.map((u) => { const [st, cls] = userState(u), n = week(u), e = errors.filter((x) => x.uid === u.uid).length; return `<div class="card">
+          <div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span><div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(ROLE_NAMES[u.role] || "Joueur")}${u.quartier ? ` · ${esc(u.quartier)}` : ""}${u.tel ? ` · ${esc(u.tel)}` : ""}</div></div><span class="chip chip-${cls}">${st}</span></div>
+          <div class="small muted">Inscrit ${ago(u.created)} · vu ${ago(u.lastSeen)} · <b style="color:var(--ink)">${n} action${n > 1 ? "s" : ""}</b> cette semaine (réservations, sessions, défis)${e ? ` · <b style="color:var(--bad)">${e} erreur${e > 1 ? "s" : ""}</b>` : ""}</div>
+          <div class="row">${u.uid === (account && account.uid) ? "" : `<button class="btn ${u.active ? "btn-ghost" : "btn-turf"} btn-sm" data-toggle="${esc(u.uid)}" data-active="${u.active ? "0" : "1"}">${u.active ? "Suspendre" : "Réactiver"}</button>`}
+            ${u.tel ? `<a class="btn btn-wa btn-sm" href="${waLink(`Bonjour ${u.name || ""}, ici l'équipe de l'appli ${C.nomCourt}. `, telWa(u.tel))}" target="_blank" rel="noopener">${WA_ICON}WhatsApp</a>` : ""}
+            <button class="btn btn-bib btn-sm" data-voir="${esc(u.uid)}">Voir</button></div>
+        </div>`; }).join("") : '<div class="empty-state">Aucun client ne correspond.</div>'}</div>
+        <p class="small muted">« Voir » ouvre l'appli comme ce client la voit, avec son rôle, en lecture seule : rien n'est enregistré.</p>
+      </section>
+      <section>
+        <h2>Erreurs des 7 derniers jours</h2>
+        <div class="list">${errors.length ? errors.map((e) => `<div class="card">
+          <div class="row">${e.kind === "plantage" ? '<span class="chip chip-bad">Plantage</span>' : '<span class="chip chip-warn">Écriture refusée</span>'}<span class="small muted">${ago(e.at)} · écran ${esc(e.route || "accueil")}</span><button class="link" style="margin-left:auto" data-delerr="${esc(e.id)}">Effacer</button></div>
+          <p style="overflow-wrap:anywhere">${esc(e.msg)}</p>
+          <p class="small muted">${esc(e.name || e.uid)} · ${esc(ROLE_NAMES[e.role] || e.role || "visiteur")} · ${esc(/iPhone|iPad/.test(e.ua || "") ? "iPhone" : /Android/.test(e.ua || "") ? "Android" : "Ordinateur")}</p>
+        </div>`).join("") : '<div class="empty-state">Aucune erreur. Tout marche.</div>'}</div>
       </section>
     </main>`;
   }
 
   function toggleAccount(uid, active) {
-    const u = adminData.users.find((x) => x.uid === uid);
-    if (!Compte.enabled) { u.active = active; render(); toast(active ? "Compte réactivé" : "Compte suspendu"); return; }
-    Compte.admin.setActive(uid, active).then(() => { u.active = active; render(); toast(active ? "Compte réactivé" : "Compte suspendu"); }, (e) => toast("Refusé : " + e.message));
+    const u = adminData.users.find((x) => x.uid === uid), done = () => { u.active = active; render(); toast(active ? `${u.name || "Compte"} réactivé` : `${u.name || "Compte"} suspendu`); };
+    if (!Compte.enabled) return done();
+    Compte.admin.setActive(uid, active).then(done, () => toast("Refusé : ce compte n'est pas admin dans les règles Firebase"));
   }
 
+  // Voir : l'appli avec le profil et le rôle du client, sur les données de ce téléphone, sans rien enregistrer
+  async function startVoir(uid) {
+    let who = adminData && adminData.users.find((u) => u.uid === uid);
+    if (Compte.enabled) who = await Compte.admin.user(uid).catch(() => who);
+    if (!who) return toast("Compte introuvable");
+    if (!mode) realS = S;
+    S = JSON.parse(JSON.stringify(realS));
+    S.me = { ...S.me, name: who.name || "Client", role: who.role || "joueur", poste: who.poste || "Milieu", teamId: "", slots: [], goals: 0, motm: 0, abonne: false };
+    mode = { type: "voir", who };
+    location.hash = who.role === "gerant" || who.role === "personnel" ? "gerant" : "accueil"; render();
+  }
+  // Présentation : données d'exemple neuves, rôle choisi dans la barre du haut
+  function startDemo(role) {
+    if (!mode) realS = S;
+    if (!mode || mode.type !== "demo") { S = seed(); S.me = { ...S.me, name: "Démo", teamId: S.teams[0].id }; }
+    S.me.role = role; mode = { type: "demo" };
+    location.hash = role === "gerant" || role === "personnel" ? "gerant" : "accueil"; render();
+  }
+  function stopMode() { if (realS) S = realS; mode = null; realS = null; adminData = null; location.hash = "admin"; render(); }
+  function modeBar() {
+    if (!mode) return "";
+    const roles = Object.entries(ROLE_NAMES);
+    return `<div class="modebar"><div class="wrap">${mode.type === "voir"
+      ? `<span class="small">Vue de <b>${esc(mode.who.name || "client")}</b> (${esc(ROLE_NAMES[S.me.role])}) · lecture seule</span>`
+      : `<span class="small"><b>Présentation</b></span>${roles.map(([k, l]) => `<button class="fchip fchip-sm" data-demorole="${k}" aria-pressed="${S.me.role === k}">${l}</button>`).join("")}`}
+      <button class="iconbtn" data-stopmode aria-label="Quitter">×</button></div></div>`;
+  }
+  // En lecture seule, les boutons qui enregistrent quelque chose sont bloqués
+  const WRITE_SEL = "[data-book],[data-defi],[data-sess],[data-pay],[data-cancel],[data-join],[data-leave],[data-slot],[data-confirm],[data-cash],[data-absent],[data-score],[data-sub],#newNeed,#addPhone,#addStaff,[data-rmstaff],#openSess,#resetDemo,#editProfile,#signOut,[data-forecast]";
+  document.addEventListener("click", (e) => {
+    if (!mode || mode.type !== "voir") return;
+    if (e.target.closest(WRITE_SEL) || (e.target.closest("button[type=submit]"))) { e.preventDefault(); e.stopImmediatePropagation(); toast("Vue en lecture seule : rien n'est modifié"); }
+  }, true);
+  document.addEventListener("submit", (e) => { if (mode && mode.type === "voir") { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+
   function suspendedView() {
-    return `<main class="wrap"><section><h2>Compte suspendu</h2><div class="empty-state">Votre compte est suspendu pour le moment. Contactez ${esc(C.nomCourt)} au ${esc(C.telephone)} pour le réactiver.</div><button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button></section></main>`;
+    return `<main class="wrap"><section><h2>Compte suspendu</h2><div class="empty-state">Votre compte est suspendu. Contactez l'équipe au <b>${esc(C.supportTel || C.telephone)}</b>.</div><button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button></section></main>`;
   }
 
   /* ---------- Navigation et événements ---------- */
@@ -978,14 +1044,14 @@
 
   function render() {
     const v = current();
-    const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "admin" || canAdmin()));
+    const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "admin" || (canAdmin() && !mode)));
     if (account && !account.active) {
       $("#app").innerHTML = `<header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span></div></header>${suspendedView()}`;
       $("#signOut").addEventListener("click", () => Compte.signOut().then(() => { account = null; render(); }));
       return;
     }
     $("#app").innerHTML = `
-      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div></header>
+      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div>${modeBar()}</header>
       ${VIEWS[v]()}
       <div class="tabs"><nav style="--n:${tabs.length}">${tabs.map((k) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ""}>${icon(k)}${LABELS[k]}</a>`).join("")}</nav></div>`;
     document.title = `${C.nomCourt} · ${LABELS[v]}`;
@@ -1004,7 +1070,8 @@
         if ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel)) { toast("Clé d'entrée incorrecte"); logRefus(`Clé d'entrée incorrecte (${role})`); return; }
         Object.assign(S.me, { name: $("#mName").value.trim(), poste: f.querySelector("[name=mPoste]:checked").value, teamId: $("#mTeam").value, role });
         save();
-        if (account) Compte.saveProfile({ name: S.me.name, role, poste: S.me.poste }).catch(() => toast("Profil gardé sur ce téléphone, l'envoi en ligne a échoué")); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render(); toast("Profil enregistré");
+        if (account) Object.assign(account, { name: S.me.name, role, poste: S.me.poste, tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "" });
+        if (account) Compte.saveProfile(account).catch(() => toast("Profil gardé sur ce téléphone, l'envoi en ligne a échoué")); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render(); toast("Profil enregistré");
       });
     }
     const on = (sel, fn) => app.querySelectorAll(sel).forEach((el) => el.addEventListener("click", (e) => fn(el, e)));
@@ -1024,7 +1091,7 @@
     on("#newNeed", needSheet);
     on("[data-join]", (el) => {
       if (!S.me.name) { toast("Créez d'abord votre profil"); location.hash = "profil"; return; }
-      const n = S.needs.find((x) => x.id === el.dataset.join); n.joined.push(S.me.name); save(); render(); toast(`C'est noté, ${n.team} compte sur vous`);
+      const n = S.needs.find((x) => x.id === el.dataset.join); n.joined.push(S.me.name); act(); save(); render(); toast(`C'est noté, ${n.team} compte sur vous`);
     });
     on("[data-leave]", (el) => { const n = S.needs.find((x) => x.id === el.dataset.leave); n.joined = n.joined.filter((j) => j !== S.me.name); save(); render(); });
     on("[data-slot]", (el) => { const s = el.dataset.slot, i = S.me.slots.indexOf(s); i >= 0 ? S.me.slots.splice(i, 1) : S.me.slots.push(s); save(); render(); });
@@ -1039,7 +1106,11 @@
     on("[data-absent]", (el) => { S.bookings.find((x) => x.id === el.dataset.absent).status = "absent"; save(); render(); });
     on("[data-score]", (el) => scoreSheet(el.dataset.score));
     on("#exportCsv", exportCsv);
-    on("[data-atab]", (el) => { adminTab = el.dataset.atab; render(); });
+    on("[data-afilter]", (el) => { adminFilter = el.dataset.afilter; render(); });
+    on("[data-voir]", (el) => startVoir(el.dataset.voir));
+    on("#startDemo", () => startDemo("joueur"));
+    on("[data-demorole]", (el) => startDemo(el.dataset.demorole));
+    on("[data-stopmode]", stopMode);
     on("#adminReload", () => { adminData = null; render(); });
     on("[data-toggle]", (el) => toggleAccount(el.dataset.toggle, el.dataset.active === "1"));
     on("[data-delerr]", (el) => {
@@ -1049,7 +1120,7 @@
     const search = $("#adminSearch");
     search && search.addEventListener("input", () => { adminQuery = search.value; const pos = search.selectionStart; render(); const s2 = $("#adminSearch"); s2.focus(); s2.setSelectionRange(pos, pos); });
     on("#signOut", () => Compte.signOut().then(() => { account = null; adminData = null; location.hash = "profil"; render(); toast("Déconnecté"); }));
-    const signedIn = (p) => { account = p; if (p) { S.me.name = S.me.name || p.name; if (p.role && p.role !== "gerant" && p.role !== "personnel") S.me.role = p.role; save(); } render(); };
+    const signedIn = (p) => { account = p; adminData = null; if (p) { S.me.name = S.me.name || p.name; if (p.role && p.role !== "gerant" && p.role !== "personnel") S.me.role = p.role; save(); } render(); };
     const authFail = (e) => { logRefus("Connexion refusée : " + (e.code || e.message)); toast(/wrong-password|invalid-credential|user-not-found/.test(e.code || "") ? "E-mail ou mot de passe incorrect" : /email-already/.test(e.code || "") ? "Ce compte existe déjà, connectez-vous" : "Connexion impossible : " + (e.code || e.message)); };
     on("#gSignIn", () => Compte.signIn().then((p) => p && signedIn(p), authFail));
     const mf = $("#mailForm");

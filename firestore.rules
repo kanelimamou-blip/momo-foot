@@ -1,51 +1,61 @@
 rules_version = '2';
 // Règles de Momo Foot, à coller dans la console Firebase (Firestore > Règles).
-// Remplacer PROPRIETAIRE_UID par l'identifiant du compte propriétaire (le même que dans docs/config.js).
+// L'identifiant dans admin() est celui du compte du propriétaire de l'appli (affiché sur la page #admin),
+// le même que dans la liste admins de docs/config.js.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function isOwner() { return signedIn() && request.auth.uid == "PROPRIETAIRE_UID"; }
+    function admin() { return signedIn() && request.auth.uid in ['aHnLVoNHOmfw70vwDdAaVmWPhMT2', 'aHnLVoNH0mfw70vwDdAaVmWPhMT2', 'aHnLVoNHOmfw7OvwDdAaVmWPhMT2', 'aHnLVoNH0mfw7OvwDdAaVmWPhMT2']; }
     function str(v, max) { return v is string && v.size() <= max; }
+    function roleOk(r) { return r in ['joueur', 'capitaine', 'personnel', 'gerant']; }
+    // activité : nombre d'actions par jour, 14 jours au plus
+    function activiteOk(a) { return a is map && a.size() <= 14; }
+
+    // L'admin peut tout lire (voir l'appli comme un client la voit, pour le support), sans rien modifier
+    // d'autre que la suspension d'un compte.
+    match /{document=**} { allow read: if admin(); }
 
     // Fiche de chaque compte client
     match /users/{uid} {
-      allow read: if isOwner() || (signedIn() && request.auth.uid == uid);
+      allow read: if signedIn() && request.auth.uid == uid;
       // création par le client lui-même, actif, avec les dates du serveur
       allow create: if signedIn() && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(["name", "email", "created", "lastSeen", "active", "role", "poste"])
+        && request.resource.data.keys().hasOnly(['name', 'email', 'tel', 'quartier', 'created', 'lastSeen', 'active', 'role', 'poste', 'activite'])
         && request.resource.data.active == true
         && request.resource.data.created == request.time
         && request.resource.data.lastSeen == request.time
         && str(request.resource.data.name, 80) && str(request.resource.data.email, 120)
-        && request.resource.data.role in ["joueur", "capitaine", "personnel", "gerant"]
-        && str(request.resource.data.poste, 30);
-      // un compte actif met à jour son nom, son rôle, son poste et sa dernière activité ; jamais son statut ni sa date d'inscription
+        && str(request.resource.data.tel, 30) && str(request.resource.data.quartier, 60)
+        && roleOk(request.resource.data.role) && str(request.resource.data.poste, 30)
+        && activiteOk(request.resource.data.activite);
+      // un compte actif met à jour ses infos et son activité ; jamais son statut ni sa date d'inscription.
+      // Un compte suspendu ne peut plus rien enregistrer, et ne peut pas lever sa suspension.
       allow update: if signedIn() && request.auth.uid == uid
         && resource.data.active == true
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "role", "poste", "lastSeen"])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'tel', 'quartier', 'role', 'poste', 'lastSeen', 'activite'])
         && request.resource.data.lastSeen == request.time
-        && str(request.resource.data.name, 80)
-        && request.resource.data.role in ["joueur", "capitaine", "personnel", "gerant"]
-        && str(request.resource.data.poste, 30);
-      // le propriétaire active ou suspend un compte, et rien d'autre
-      allow update: if isOwner()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["active"])
+        // get() : les fiches créées avant l'ajout du téléphone, du quartier et de l'activité n'ont pas ces champs
+        && str(request.resource.data.name, 80) && str(request.resource.data.get('tel', ''), 30) && str(request.resource.data.get('quartier', ''), 60)
+        && roleOk(request.resource.data.role) && str(request.resource.data.poste, 30)
+        && activiteOk(request.resource.data.get('activite', {}));
+      // l'admin suspend ou réactive un compte, et rien d'autre
+      allow update: if admin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
         && request.resource.data.active is bool;
       allow delete: if false;
     }
 
-    // Journal des erreurs : tout le monde peut en écrire une, seul le propriétaire les lit et les efface
-    match /errors/{id} {
-      allow create: if request.resource.data.keys().hasOnly(["kind", "message", "page", "uid", "name", "ua", "at"])
-        && request.resource.data.kind in ["plantage", "refus"]
-        && str(request.resource.data.message, 500) && str(request.resource.data.page, 60)
-        && str(request.resource.data.name, 80) && str(request.resource.data.ua, 200)
-        && request.resource.data.at == request.time
-        && (request.resource.data.uid == null || (signedIn() && request.resource.data.uid == request.auth.uid));
-      allow read, delete: if isOwner();
+    // Erreurs remontées par les téléphones : chaque compte connecté envoie les siennes, seul l'admin les lit et les efface
+    match /erreurs/{id} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['kind', 'msg', 'route', 'uid', 'name', 'role', 'ua', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.kind in ['plantage', 'refus']
+        && str(request.resource.data.msg, 500) && str(request.resource.data.route, 60)
+        && str(request.resource.data.name, 80) && str(request.resource.data.role, 20) && str(request.resource.data.ua, 200)
+        && request.resource.data.at == request.time;
+      allow delete: if admin();
       allow update: if false;
     }
-
-    match /{document=**} { allow read, write: if false; }
   }
 }
