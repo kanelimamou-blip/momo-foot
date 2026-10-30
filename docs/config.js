@@ -3,6 +3,7 @@
 window.MOMO_CONFIG = {
   nom: "FC Momo Foot",
   nomCourt: "Momo Foot",
+  urlAppli: "https://kanelimamou-blip.github.io/momo-foot/", // lien partagé sur WhatsApp et dans le QR code
   slogan: "Le foot à 6 du quartier, sous les projecteurs.",
   adresse: "Adresse du complexe à compléter",
   telephone: "77 000 00 00",

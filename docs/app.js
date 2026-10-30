@@ -33,6 +33,9 @@
   const price = (k, h) => (isWeekend(k) || h >= C.tarifs.heurePleine ? C.tarifs.pleine : C.tarifs.creuse);
   const isPast = (k, h) => { const d = fromKey(k); d.setHours(h, 0, 0, 0); return d < new Date(); };
   const waLink = (text, num) => `https://wa.me/${num || ""}?text=${encodeURIComponent(text)}`;
+  const APP_URL = C.urlAppli || location.href.split("#")[0];
+  const inviteText = () => `Rejoins ${C.nom} sur l'appli : réserve ton créneau, ou inscris-toi seul à une session (à ${C.sessions.minJoueurs} joueurs, on joue). Ouvre le lien puis « Ajouter à l'écran d'accueil » pour l'installer : ${APP_URL}`;
+  const qrSvg = (text, cell) => { const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: cell || 6, margin: 2, scalable: true }); };
 
   /* ---------- Données ---------- */
   function rng(seed) { return () => ((seed = (seed * 9301 + 49297) % 233280) / 233280); }
@@ -225,6 +228,14 @@
       <section>
         <div class="sec-head"><h2>Derniers matchs</h2></div>
         <div class="list">${res.map(resultCard).join("")}</div>
+      </section>
+      <section>
+        <div class="card share">
+          <h3>Invitez vos potes</h3>
+          <p class="small">Plus il y a de joueurs dans l'appli, plus les sessions se remplissent vite. Envoyez le lien d'installation à votre groupe WhatsApp.</p>
+          <a class="btn btn-wa btn-block" href="${waLink(inviteText())}" target="_blank" rel="noopener">${WA_ICON}Partager sur WhatsApp</a><button class="btn btn-ghost btn-block" data-sharesheet>Afficher le QR code</button>
+          ${installEvt ? '<button class="btn btn-turf btn-block" id="installApp">Installer l\'appli sur ce téléphone</button>' : ""}
+        </div>
       </section>
       <section>
         <h2>Le terrain</h2>
@@ -520,8 +531,9 @@
       <div class="row"><span class="when">${dayLabel(b.date)} · ${hh(b.hour)}</span>${chip}</div>
       <div class="meter" role="img" aria-label="${n} inscrits sur ${min}"><i style="width:${Math.min(100, (n / min) * 100)}%"></i></div>
       <div class="row small"><span class="num"><b>${n}</b> / ${min} joueurs${n > min ? ` (+${n - min} remplaçant${n - min > 1 ? "s" : ""})` : ""}</span><span class="muted" style="margin-left:auto">${esc(C.terrains[b.terrain])}</span></div>
-      <div class="row"><div class="avatars">${b.players.slice(0, 8).map((p) => `<i title="${esc(p.name)}">${initials(p.name)}</i>`).join("")}${n > 8 ? `<i class="open">+${n - 8}</i>` : ""}</div>
-      <button class="btn ${me ? "btn-ghost" : "btn-bib"} btn-sm" style="margin-left:auto" data-sess="${b.id}" ${!me && n >= max ? "disabled" : ""}>${me ? "Je suis inscrit" : n >= max ? "Complet" : `Je joue · ${money(myPrice())}`}</button></div>
+      <div class="row"><div class="avatars">${b.players.slice(0, 8).map((p) => `<i title="${esc(p.name)}">${initials(p.name)}</i>`).join("")}${n > 8 ? `<i class="open">+${n - 8}</i>` : ""}</div></div>
+      <div class="row" style="justify-content:flex-end"><a class="btn btn-ghost btn-sm" href="${waLink(`${n >= min ? "Session confirmée" : `Il manque ${min - n} joueur${min - n > 1 ? "s" : ""}`} pour jouer ${dayLabel(b.date).toLowerCase()} à ${hh(b.hour)} chez ${C.nom}, ${money(C.sessions.prixJoueur)} la place. Inscris-toi sur l'appli : ${APP_URL}#matchs`)}" target="_blank" rel="noopener" aria-label="Partager cette session sur WhatsApp">${WA_ICON}</a>
+      <button class="btn ${me ? "btn-ghost" : "btn-bib"} btn-sm" data-sess="${b.id}" ${!me && n >= max ? "disabled" : ""}>${me ? "Je suis inscrit" : n >= max ? "Complet" : `Je joue · ${money(myPrice())}`}</button></div>
     </div>`;
   }
 
@@ -598,6 +610,28 @@
         S.bookings.push(newSession(k, h, ti)); save(); closeSheet(); render(); toast("Session ouverte");
       });
     });
+  }
+
+  /* ---------- Partage ---------- */
+  const WA_ICON = '<svg class="wa" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2a8.2 8.2 0 0 1-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.3.8 3.2.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3z"/></svg>';
+  let installEvt = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; if (current() === "accueil") render(); });
+
+  function shareSheet() {
+    sheet(`${head("Partager l'appli", "Pour que vos amis l'installent")}
+      <div class="qr-wrap">${qrSvg(APP_URL)}</div>
+      <p class="small muted" style="text-align:center">Faites scanner ce code avec l'appareil photo, ou envoyez le lien.</p>
+      <a class="btn btn-wa btn-block" href="${waLink(inviteText())}" target="_blank" rel="noopener">${WA_ICON}Partager sur WhatsApp</a>
+      ${navigator.share ? '<button class="btn btn-ghost btn-block" id="nativeShare">Autres applis (Instagram, SMS...)</button>' : ""}
+      <div class="copybox"><code>${esc(APP_URL)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(APP_URL)}" data-done="Lien copié">Copier</button></div>
+      <p class="small muted">Pour installer : ouvrir le lien, puis dans le menu du navigateur, « Ajouter à l'écran d'accueil ».</p>`, (el) => {
+      const n = el.querySelector("#nativeShare");
+      n && n.addEventListener("click", () => navigator.share({ title: C.nom, text: inviteText().replace(" : " + APP_URL, ""), url: APP_URL }).catch(() => {}));
+    });
+  }
+
+  function qrFull() {
+    sheet(`${head(esc(C.nom), "Scannez pour installer l'appli")}<div class="qr-wrap qr-big">${qrSvg(APP_URL, 10)}</div><p style="text-align:center"><b>${esc(APP_URL.replace(/^https?:\/\//, ""))}</b></p>`);
   }
 
   /* ---------- Profil ---------- */
@@ -698,6 +732,15 @@
       <section>
         <h2>Meilleurs clients</h2>
         <div class="card" style="padding:6px 10px"><table class="rank"><tbody>${best.map(([n, c], i) => `<tr><td class="num">${i + 1}</td><td>${esc(n)}</td><td class="n">${c} créneaux</td></tr>`).join("")}</tbody></table></div>
+      </section>
+      <section>
+        <div class="sec-head"><h2>Faire connaître l'appli</h2></div>
+        <div class="card">
+          <div class="qr-wrap">${qrSvg(APP_URL)}</div>
+          <p class="small muted" style="text-align:center">À scanner avec l'appareil photo du téléphone. Affichez-le à l'accueil, sur les murs du terrain et dans vos statuts.</p>
+          <div class="row"><button class="btn btn-turf grow" id="qrBig">Afficher en grand</button><a class="btn btn-ghost grow" href="affiche.html" target="_blank" rel="noopener">Affiche à imprimer</a></div>
+          <a class="btn btn-wa btn-block" href="${waLink(inviteText())}" target="_blank" rel="noopener">${WA_ICON}Envoyer le lien sur WhatsApp</a>
+        </div>
       </section>
       ${S.me.role === "gerant" ? `<section>
         <div class="sec-head"><h2>Personnel</h2><button class="link" id="addStaff">Ajouter</button></div>
@@ -829,7 +872,7 @@
     const v = current();
     const tabs = isStaff() ? Object.keys(VIEWS) : Object.keys(VIEWS).filter((k) => k !== "gerant");
     $("#app").innerHTML = `
-      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span></div></header>
+      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div></header>
       ${VIEWS[v]()}
       <div class="tabs"><nav style="--n:${tabs.length}">${tabs.map((k) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ""}>${icon(k)}${LABELS[k]}</a>`).join("")}</nav></div>`;
     document.title = `${C.nomCourt} · ${LABELS[v]}`;
@@ -856,6 +899,9 @@
     on("[data-defi]", (el) => acceptSheet(el.dataset.defi));
     on("[data-sess]", (el) => joinSheet(el.dataset.sess));
     on("[data-sub]", subSheet);
+    on("[data-sharesheet]", shareSheet);
+    on("#qrBig", qrFull);
+    on("#installApp", () => { installEvt.prompt(); installEvt.userChoice.finally(() => { installEvt = null; render(); }); });
     on("#openSess", openSessSheet);
     on("[data-pay]", (el) => paySheet(el.dataset.pay));
     on("[data-cancel]", (el) => cancelSheet(el.dataset.cancel));

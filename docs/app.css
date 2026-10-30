@@ -247,3 +247,16 @@ textarea.input { padding: 10px 12px; min-height: 80px; }
 .slot.sess span { color: inherit; opacity: .9; }
 .meter { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--sess); border-radius: inherit; }
+
+/* Partage */
+:root { --wa: #1FA855; --on-wa: #FFFFFF; }
+.btn-wa { background: var(--wa); color: var(--on-wa); }
+.btn .wa { width: 20px; height: 20px; flex: none; }
+.btn-sm .wa { width: 18px; height: 18px; }
+.iconbtn { border: 0; background: rgba(255, 255, 255, .12); color: inherit; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+.iconbtn svg { width: 18px; height: 18px; }
+.share { background: var(--surface-2); border-color: transparent; }
+.qr-wrap { background: #FFFFFF; border-radius: 14px; padding: 12px; width: min(240px, 100%); align-self: center; margin: 0 auto; }
+.qr-wrap svg { display: block; width: 100%; height: auto; }
+.qr-wrap svg rect[fill="#ffffff"], .qr-wrap svg rect[fill="white"] { fill: #FFFFFF; }
+.qr-big { width: min(340px, 100%); }
