@@ -13,6 +13,12 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
   const page = async () => { const c = await b.newContext({ viewport: { width: 390, height: 844 } }); const p = await c.newPage(); p.on("dialog", (d) => d.dismiss()); return p; };
   const fsTry = (p, fn) => p.evaluate(`(${fn})().then(() => "ok", (e) => "refus " + e.code)`);
   const text = (p, sel) => p.textContent(sel).catch(() => "");
+  // Choisit un jour dans le calendrier en carreaux (après-demain), en passant au mois suivant si besoin
+  const goDay = async (p, off) => {
+    const k = await p.evaluate((o) => { const d = new Date(); d.setDate(d.getDate() + o); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }, off);
+    if (!(await p.$(`[data-day="${k}"]`))) await p.click('[data-cal="1"]');
+    await p.click(`[data-day="${k}"]`);
+  };
 
   // 1. Un client s'inscrit, réserve, et plante
   const cli = await page();
@@ -23,7 +29,8 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
   await cli.fill("#mName", NAME); await cli.fill("#mTel", "77 123 45 67"); await cli.fill("#mQuartier", "Médina");
   await cli.click("#meForm button[type=submit]"); await cli.waitForTimeout(1200);
   await cli.goto(BASE + "#planning"); await cli.waitForTimeout(400);
-  await cli.click(".days button:nth-child(3)"); await cli.click(".slot.free");
+  check("le planning montre un calendrier en carreaux", (await cli.$$(".cal-grid [data-day]")).length >= 28);
+  await goDay(cli, 2); await cli.click(".slot.free");
   await cli.fill("#bTeam", TEAM); await cli.fill("#bPhone", "77 123 45 67"); await cli.click("#bookForm button[type=submit]");
   await cli.waitForTimeout(2500); // l'activité part après 1,5 s
   await cli.evaluate(() => setTimeout(() => { throw new Error("Plantage de test"); }, 0)); await cli.waitForTimeout(1500);
@@ -41,7 +48,7 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
   await cl2.goto(BASE + "#profil"); await cl2.waitForSelector("#gSignIn");
   await cl2.fill("#lMail", `joueur${stamp}@test.sn`); await cl2.fill("#lPass", PASS); await cl2.click("[data-mode=new]");
   await cl2.waitForSelector("#meForm"); await cl2.fill("#mName", `Awa ${stamp}`); await cl2.click("#meForm button[type=submit]"); await cl2.waitForTimeout(1000);
-  await cl2.goto(BASE + "#planning"); await cl2.waitForTimeout(1500); await cl2.click(".days button:nth-child(3)");
+  await cl2.goto(BASE + "#planning"); await cl2.waitForTimeout(1500); await goDay(cl2, 2);
   check("l'autre téléphone voit le créneau réservé (en attente d'acompte)", (await cl2.locator(".slot.hold", { hasText: TEAM }).count()) === 1);
   await cli.goto(BASE + "#matchs"); await cli.waitForTimeout(1200);
   const before1 = await text(cli, ".card:has(.meter)");
@@ -83,10 +90,11 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
   check("réactivé, le client retrouve l'appli", !/suspendu/i.test(await text(cli, "main")));
 
   // 3 bis. L'admin donne le rôle gérant ; le gérant valide l'acompte, vu en direct par l'autre téléphone
-  await adm.locator(".card:has([data-voir])", { hasText: NAME }).locator("[data-role]").selectOption("gerant"); await adm.waitForTimeout(1200);
+  await adm.locator(".card:has([data-voir])", { hasText: NAME }).locator("[data-role]").selectOption("proprietaire"); await adm.waitForTimeout(1200);
   await cli.reload(); await cli.waitForTimeout(3500);
-  check("le client devenu gérant a l'onglet Gérant", (await cli.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()))).includes("Gérant"));
-  await cl2.goto(BASE + "#planning"); await cl2.waitForTimeout(800); await cl2.click(".days button:nth-child(3)");
+  const tabsOwn = await cli.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()));
+  check("le client devenu propriétaire a Gestion et Réglages", tabsOwn.includes("Gestion") && tabsOwn.includes("Réglages"));
+  await cl2.goto(BASE + "#planning"); await cl2.waitForTimeout(800); await goDay(cl2, 2);
   await cli.goto(BASE + "#gerant"); await cli.waitForTimeout(1000);
   const pend = cli.locator(".card:has([data-confirm])", { hasText: TEAM });
   check("le gérant voit l'acompte à vérifier", (await pend.count()) === 1);
@@ -95,6 +103,27 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
   check("acompte validé : l'autre téléphone voit le créneau confirmé", (await cl2.locator(".slot.hold", { hasText: TEAM }).count()) === 0 && (await cl2.locator(".slot.taken", { hasText: TEAM }).count()) === 1);
   check("un joueur ne lit pas la caisse", /refus permission-denied/.test(await fsTry(cl2, () => firebase.firestore().collection("caisse").get())));
   await cli.screenshot({ path: SHOTS + "/e2e-gerant.png", fullPage: true });
+
+  // 3 ter. Le propriétaire change un prix (vu en direct), crée un rôle et le donne à un membre
+  await cli.goto(BASE + "#reglages"); await cli.waitForTimeout(1000);
+  await cli.fill("#t_pleine", "21500"); await cli.click("#tarifForm button[type=submit]"); await cl2.waitForTimeout(1500);
+  check("nouveau prix vu en direct sur l'autre téléphone", /21\s500 F/.test(await text(cl2, ".grid")));
+  await cli.click("#addRole"); await cli.waitForTimeout(200);
+  const nf = cli.locator("#rolesForm fieldset", { has: cli.locator('[data-rnom][value="Nouveau rôle"]') });
+  const ARB = `Arbitre ${stamp % 1000}`;
+  await nf.locator("[data-rnom]").fill(ARB); await nf.locator("[data-rniv]").fill("20"); await nf.locator('[data-rdroit="scores"]').check();
+  await cli.click("#rolesForm button[type=submit]"); await cli.waitForTimeout(1500);
+  check("le rôle Arbitre est enregistré", (await cli.$$eval("#rolesForm [data-rnom]", (x) => x.map((e) => e.value))).includes(ARB));
+  await cli.fill("#membreSearch", `Awa ${stamp}`); await cli.waitForTimeout(800);
+  const sel = cli.locator(".card", { hasText: `Awa ${stamp}` }).locator("[data-mrole]");
+  const optArb = await sel.locator("option", { hasText: ARB }).getAttribute("value");
+  check("le propriétaire ne peut pas nommer un autre propriétaire", (await sel.locator("option", { hasText: "Propriétaire" }).count()) === 0);
+  await sel.selectOption(optArb); await cli.waitForTimeout(1200);
+  await cl2.reload(); await cl2.waitForTimeout(3500);
+  const tabsArb = await cl2.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()));
+  await cl2.goto(BASE + "#gerant"); await cl2.waitForTimeout(800);
+  check("l'arbitre a Gestion sans la caisse ni les réglages", tabsArb.includes("Gestion") && !tabsArb.includes("Réglages") && !(await cl2.isVisible("text=Encaissé aujourd'hui")));
+  await cli.screenshot({ path: SHOTS + "/e2e-reglages.png", fullPage: true });
 
   // 4. Voir un client, en lecture seule
   await adm.locator(".card:has([data-voir])", { hasText: NAME }).locator("[data-voir]").click(); await adm.waitForTimeout(1200);
@@ -108,9 +137,9 @@ const check = (label, cond) => { cond ? ok++ : ko++; console.log(cond ? "ok  " :
 
   // 5. Présentation : passer d'un rôle à l'autre
   await adm.click("#startDemo"); await adm.waitForTimeout(400);
-  check("présentation lancée en joueur", /Présentation/.test(await text(adm, ".modebar")) && !(await adm.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()))).includes("Gérant"));
+  check("présentation lancée en joueur", /Présentation/.test(await text(adm, ".modebar")) && !(await adm.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()))).includes("Gestion"));
   await adm.click('[data-demorole="gerant"]'); await adm.waitForTimeout(400);
-  check("passage en gérant : espace gérant ouvert", (await adm.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()))).includes("Gérant") && /Aujourd'hui/.test(await text(adm, "main h2")));
+  check("passage en gérant : espace gérant ouvert", (await adm.$$eval(".tabs a", (x) => x.map((e) => e.textContent.trim()))).includes("Gestion") && /Aujourd'hui/.test(await text(adm, "main h2")));
   await adm.screenshot({ path: SHOTS + "/e2e-presentation.png" });
   await adm.click('[data-demorole="capitaine"]'); await adm.waitForTimeout(300);
   check("passage en capitaine", /Capitaine|capitaine/.test(await adm.$eval('[data-demorole="capitaine"]', (e) => e.getAttribute("aria-pressed") === "true" ? "Capitaine" : "")));

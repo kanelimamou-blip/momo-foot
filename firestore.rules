@@ -7,25 +7,41 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function admin() { return signedIn() && request.auth.uid in ['aHnLVoNHOmfw70vwDdAaVmWPhMT2']; }
     function str(v, max) { return v is string && v.size() <= max; }
-    function roleOk(r) { return r in ['joueur', 'capitaine', 'personnel', 'gerant']; }
+    function roleOk(r) { return r is string && r.size() > 0 && r.size() <= 30; }
     // activité : nombre d'actions par jour, 14 jours au plus
     function activiteOk(a) { return a is map && a.size() <= 14; }
     function userDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
     // Compte inscrit et non suspendu : seul un tel compte enregistre quelque chose
     function actif() { return signedIn() && exists(userDoc()) && get(userDoc()).data.active == true; }
-    // Gérant et personnel du complexe : rôle donné par l'admin
-    function staff() { return actif() && get(userDoc()).data.role in ['gerant', 'personnel']; }
-    function gerant() { return actif() && get(userDoc()).data.role == 'gerant'; }
+    // Rôles du complexe : le propriétaire (donné par l'admin) a tous les droits ; les autres rôles, leur niveau (1 à 99)
+    // et leurs droits sont dans reglages/roles. Tant que ce document n'existe pas, ce sont les rôles de départ ci-dessous
+    // (les mêmes que ROLES_BASE dans docs/app.js).
+    function rolesDoc() { return /databases/$(database)/documents/reglages/roles; }
+    function rolesMap() {
+      return exists(rolesDoc()) ? get(rolesDoc()).data.roles : {
+        'gerant': { 'nom': 'Gérant', 'niveau': 80, 'droits': ['planning', 'caisse', 'scores', 'abonnements', 'personnel', 'tarifs', 'membres'] },
+        'caissier': { 'nom': 'Caissier', 'niveau': 50, 'droits': ['planning', 'caisse', 'abonnements'] },
+        'personnel': { 'nom': 'Personnel', 'niveau': 30, 'droits': ['planning', 'scores'] } };
+    }
+    function myRole() { return get(userDoc()).data.role; }
+    function owner() { return actif() && myRole() == 'proprietaire'; }
+    // membre de l'équipe du complexe, quel que soit son rôle
+    function staff() { return actif() && (myRole() == 'proprietaire' || myRole() in rolesMap()); }
+    function can(p) { return actif() && (myRole() == 'proprietaire' || (myRole() in rolesMap() && p in rolesMap()[myRole()].droits)); }
+    // niveau d'un rôle : propriétaire 100, joueur et capitaine 0, les autres plafonnés à 99
+    function niveau(r) { return r == 'proprietaire' ? 100 : (r in rolesMap() ? (rolesMap()[r].niveau < 100 ? rolesMap()[r].niveau : 99) : 0); }
     function d() { return request.resource.data; }
     function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
-    // L'admin peut tout lire (voir l'appli comme un client la voit, pour le support), sans rien modifier
-    // d'autre que la suspension et le rôle d'un compte.
+    // L'admin (le propriétaire de l'appli, qui la vend) peut tout lire pour le support, sans rien modifier
+    // d'autre que la suspension et le rôle d'un compte (c'est lui qui nomme le propriétaire du complexe).
     match /{document=**} { allow read: if admin(); }
 
     // Fiche de chaque compte client
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
+      // droit Membres : voir les comptes pour leur donner un rôle
+      allow read: if can('membres');
       // création par le client lui-même, actif, joueur ou capitaine, avec les dates du serveur
       allow create: if signedIn() && request.auth.uid == uid
         && d().keys().hasOnly(['name', 'email', 'tel', 'quartier', 'created', 'lastSeen', 'active', 'role', 'poste', 'activite', 'equipe'])
@@ -51,7 +67,26 @@ service cloud.firestore {
       allow update: if admin()
         && changed().hasOnly(['active', 'role'])
         && d().active is bool && roleOk(d().role);
+      // droit Membres : donner un rôle sous son propre niveau, à un compte sous son propre niveau
+      allow update: if can('membres') && request.auth.uid != uid
+        && changed().hasOnly(['role'])
+        && (d().role in ['joueur', 'capitaine'] || d().role in rolesMap())
+        && niveau(resource.data.role) < niveau(myRole()) && niveau(d().role) < niveau(myRole());
       allow delete: if false;
+    }
+
+    // Réglages du complexe : rôles (propriétaire seulement) et prix (droit Prix). Lisibles par tous (tarifs de la vitrine).
+    match /reglages/{id} { allow read: if true; }
+    match /reglages/roles {
+      allow write: if owner() && d().keys().hasOnly(['roles']) && d().roles is map && d().roles.size() <= 20
+        && !('proprietaire' in d().roles) && !('joueur' in d().roles) && !('capitaine' in d().roles);
+    }
+    match /reglages/tarifs {
+      allow write: if can('tarifs')
+        && d().keys().hasOnly(['creuse', 'pleine', 'heurePleine', 'acompte', 'prixJoueur', 'prixAbonne', 'abonnementMois', 'minJoueurs', 'maxJoueurs'])
+        && d().creuse is int && d().pleine is int && d().acompte is int && d().prixJoueur is int && d().prixAbonne is int && d().abonnementMois is int
+        && d().heurePleine is int && d().heurePleine >= 0 && d().heurePleine <= 24
+        && d().minJoueurs is int && d().maxJoueurs is int && d().minJoueurs >= 2 && d().maxJoueurs >= d().minJoueurs && d().maxJoueurs <= 30;
     }
 
     // Erreurs remontées par les téléphones : chaque compte connecté envoie les siennes, seul l'admin les lit et les efface
@@ -77,7 +112,7 @@ service cloud.firestore {
           && d().hour is int && d().hour >= 0 && d().hour <= 23 && d().terrain is int && d().terrain >= 0 && d().terrain <= 9
           && str(d().team, 60) && str(d().opponent, 60) && str(d().niveau, 20)
           && d().type in ['prive', 'defi', 'session'] && d().status in ['attente', 'confirme', 'paye', 'absent']
-          && d().get('players', {}) is map && d().get('players', {}).size() <= 14;
+          && d().get('players', {}) is map && d().get('players', {}).size() <= 30;
       }
       // tarif réduit seulement pour un abonné en cours
       function aboActif() {
@@ -97,7 +132,7 @@ service cloud.firestore {
             && d().opponent == '' && d().price is int && d().price >= 0 && !('players' in d()))
           || (d().type == 'session' && d().by == '' && d().status == 'confirme'
             && d().players.keys().hasOnly([request.auth.uid]) && myPlayerOk(d().players)));
-      allow create: if staff() && bkOk() && d().createdAt == request.time;
+      allow create: if can('planning') && bkOk() && d().createdAt == request.time;
       // relever un défi encore ouvert
       allow update: if actif() && resource.data.type == 'defi' && resource.data.opponent == ''
         && changed().hasOnly(['opponent', 'opponentId', 'opBy'])
@@ -106,12 +141,12 @@ service cloud.firestore {
       allow update: if actif() && resource.data.type == 'session'
         && changed().hasOnly(['players'])
         && d().players.diff(resource.data.players).affectedKeys().hasOnly([request.auth.uid])
-        && d().players.size() <= 14 && myPlayerOk(d().players);
-      // le personnel confirme les acomptes, encaisse, note les absents et gère les sessions
-      allow update: if staff() && bkOk();
+        && d().players.size() <= 30 && myPlayerOk(d().players);
+      // l'équipe confirme les acomptes, note les absents et gère les sessions (Planning), encaisse (Caisse)
+      allow update: if (can('planning') || can('caisse')) && bkOk();
       // annulation par celui qui a réservé ou par le personnel ; un créneau en attente d'acompte depuis plus de
       // 15 minutes (attenteAcompteMinutes de config.js) peut être libéré par n'importe quel compte
-      allow delete: if staff() || (actif() && resource.data.by == request.auth.uid)
+      allow delete: if can('planning') || (actif() && resource.data.by == request.auth.uid)
         || (actif() && resource.data.status == 'attente' && request.time > resource.data.createdAt + duration.value(15, 'm'));
     }
 
@@ -120,8 +155,8 @@ service cloud.firestore {
       function slot() { return /databases/$(database)/documents/creneaux/$(id); }
       allow read: if staff() || (signedIn() && resource.data.by == request.auth.uid);
       allow create, update: if actif() && d().keys().hasOnly(['phone', 'name', 'by']) && str(d().phone, 30) && str(d().name, 80)
-        && d().by == request.auth.uid && (staff() || (exists(slot()) && get(slot()).data.by == request.auth.uid));
-      allow delete: if staff() || (signedIn() && resource.data.by == request.auth.uid);
+        && d().by == request.auth.uid && (can('planning') || (exists(slot()) && get(slot()).data.by == request.auth.uid));
+      allow delete: if can('planning') || (signedIn() && resource.data.by == request.auth.uid);
     }
 
     // Équipes et classement : chacun crée son équipe, seul le personnel met à jour les points (après un score)
@@ -130,16 +165,16 @@ service cloud.firestore {
       allow create: if actif() && d().keys().hasOnly(['name', 'captain', 'color', 'elo', 'w', 'd', 'l', 'gf', 'ga', 'by'])
         && d().by == request.auth.uid && str(d().name, 60) && str(d().captain, 80) && str(d().color, 10)
         && d().elo == 1050 && d().w == 0 && d().d == 0 && d().l == 0 && d().gf == 0 && d().ga == 0;
-      allow update: if staff() && changed().hasOnly(['elo', 'w', 'd', 'l', 'gf', 'ga', 'name', 'color']);
-      allow delete: if staff();
+      allow update: if can('scores') && changed().hasOnly(['elo', 'w', 'd', 'l', 'gf', 'ga', 'name', 'color']);
+      allow delete: if can('scores');
     }
 
     // Scores publiés par le personnel
     match /resultats/{id} {
       allow read: if true;
-      allow create: if staff() && d().keys().hasOnly(['date', 'hour', 'a', 'b', 'sa', 'sb', 'motm', 'at'])
+      allow create: if can('scores') && d().keys().hasOnly(['date', 'hour', 'a', 'b', 'sa', 'sb', 'motm', 'at'])
         && d().sa is int && d().sb is int && str(d().motm, 80) && d().at == request.time;
-      allow delete: if staff();
+      allow delete: if can('scores');
     }
 
     // « Il manque des joueurs » : l'équipe publie, chaque joueur ne coche que sa propre présence
@@ -169,24 +204,24 @@ service cloud.firestore {
         && d().status == 'demande' && str(d().name, 80) && d().at == request.time;
       allow update: if actif() && request.auth.uid == uid && changed().hasOnly(['name', 'status', 'at'])
         && d().status == 'demande' && str(d().name, 80) && d().at == request.time;
-      allow update: if staff() && changed().hasOnly(['status', 'until']) && d().status in ['actif', 'fin'] && d().until is timestamp;
-      allow delete: if staff();
+      allow update: if can('abonnements') && changed().hasOnly(['status', 'until']) && d().status in ['actif', 'fin'] && d().until is timestamp;
+      allow delete: if can('abonnements');
     }
 
     // Caisse : reçus numérotés, jamais modifiés ni effacés
     match /caisse/{id} {
-      allow read: if staff();
-      allow create: if staff() && d().keys().hasOnly(['n', 'date', 'hour', 'team', 'amount', 'by', 'at', 'staff'])
+      allow read: if can('caisse');
+      allow create: if can('caisse') && d().keys().hasOnly(['n', 'date', 'hour', 'team', 'amount', 'by', 'at', 'staff'])
         && d().n is int && d().amount is int && d().staff == request.auth.uid && d().at == request.time;
     }
     match /meta/caisse {
-      allow read, write: if staff();
+      allow read, write: if can('caisse');
     }
 
-    // Équipe du complexe et horaires : le gérant la tient à jour
+    // Équipe du complexe et horaires : tenue par le droit Horaires
     match /personnel/{id} {
       allow read: if staff();
-      allow write: if gerant();
+      allow write: if can('personnel');
     }
   }
 }

@@ -274,3 +274,17 @@ textarea.input { padding: 10px 12px; min-height: 80px; }
 
 /* Choix du rôle dans l'espace admin */
 .input-sm { width: auto; min-height: 34px; padding: 4px 8px; font-size: 14px; }
+
+/* Calendrier en carreaux */
+.cal { display: flex; flex-direction: column; gap: 10px; }
+.cal .iconbtn { font-size: 1.5rem; color: var(--ink); }
+.cal .iconbtn:disabled { opacity: .3; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-h { font-size: .7rem; font-weight: 600; text-transform: uppercase; color: var(--muted); text-align: center; }
+.cal-grid button { aspect-ratio: 1; border-radius: 8px; border: 1.5px solid var(--line); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0;
+  background: color-mix(in srgb, var(--turf) var(--f, 0%), var(--surface)); color: var(--ink); }
+.cal-grid button b { font-family: var(--display); font-size: 1.05rem; line-height: 1; }
+.cal-grid button i { font-style: normal; font-size: .66rem; min-height: .8rem; opacity: .85; }
+.cal-grid button.today { border-color: var(--bib); }
+.cal-grid button[aria-pressed="true"] { outline: 2.5px solid var(--ink); outline-offset: 1px; }
+.cal-grid button:disabled { opacity: .35; }

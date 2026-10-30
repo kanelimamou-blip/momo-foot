@@ -42,8 +42,9 @@
   //   creneaux/{date_heure_terrain}  réservations, défis et sessions « Je veux jouer » (players : { uid: {name, poste, paid, abonne, at} })
   //   equipes, resultats, annonces (« il manque des joueurs », joined : { uid: nom }), dispos/{uid}
   //   réservés au personnel : caisse (reçus), meta/caisse (numéro du prochain reçu), personnel, contacts/{créneau} (téléphone), abonnes/{uid}
+  //   reglages/tarifs (prix modifiables) et reglages/roles (rôles du complexe, leur niveau et leurs droits)
   // Sans Firebase, les mêmes données restent sur ce téléphone. Le mode présentation de l'admin a ses propres données d'exemple.
-  const COLS = ["creneaux", "equipes", "resultats", "annonces", "dispos", "caisse", "meta", "personnel", "contacts", "abonnes"];
+  const COLS = ["creneaux", "equipes", "resultats", "annonces", "dispos", "caisse", "meta", "personnel", "contacts", "abonnes", "reglages"];
   const empty = () => Object.fromEntries(COLS.map((c) => [c, {}]));
   const slotId = (k, h, ti) => `${k}_${h}_${ti}`;
   const sessionBase = (k, h, ti) => ({ date: k, hour: h, terrain: ti, team: "Session joueurs seuls", teamId: "", opponent: "", opponentId: "", type: "session", niveau: "Tous niveaux", status: "confirme", by: "", players: {} });
@@ -136,6 +137,7 @@
   // Vue de travail tirée des données : listes triées, sessions automatiques de la semaine, créneaux en attente expirés retirés
   function derive() {
     const R = src(), me = myId(), lim = Date.now() - C.attenteAcompteMinutes * 60000;
+    applyTarifs(R.reglages.tarifs);
     const base = mode ? modeMe : account ? { name: account.name, poste: account.poste || "Milieu", role: account.role, equipe: account.equipe || "" } : ME;
     const results = Object.entries(R.resultats).map(([id, x]) => ({ id, ...x }));
     const abo = R.abonnes[me];
@@ -232,22 +234,25 @@
     LIVE = empty();
     if (!Compte.enabled || !Compte.ready) return;
     const since = dkey(addDays(today(), -14));
-    const sub = (c, q) => unsubs.push(q.onSnapshot((s) => {
+    // quiet : lecture réservée à certains rôles, un refus n'est pas une erreur
+    const sub = (c, q, quiet) => unsubs.push(q.onSnapshot((s) => {
       LIVE[c] = Object.fromEntries(s.docs.map((d) => [d.id, plain(d.data({ serverTimestamps: "estimate" }))])); changed();
-    }, (e) => { console.warn(c, e.code); Compte.logError("refus", `Lecture ${c} refusée : ${e.code}`); }));
+    }, (e) => { console.warn(c, e.code); if (!quiet) Compte.logError("refus", `Lecture ${c} refusée : ${e.code}`); }));
     const one = (c, id) => unsubs.push(col(c).doc(id).onSnapshot((d) => { LIVE[c] = d.exists ? { [id]: plain(d.data({ serverTimestamps: "estimate" })) } : {}; changed(); }, () => {}));
     sub("creneaux", col("creneaux").where("date", ">=", since));
     sub("equipes", col("equipes"));
     sub("resultats", col("resultats").where("date", ">=", dkey(addDays(today(), -30))));
     sub("annonces", col("annonces").where("date", ">=", dkey(today())));
+    sub("reglages", col("reglages"));
     if (!account) return;
     sub("dispos", col("dispos"));
-    // L'admin lit aussi les données du personnel, pour la vue « Voir » d'un gérant
-    if (account.active && (["gerant", "personnel"].includes(account.role) || Compte.isAdmin())) {
-      sub("caisse", col("caisse").where("date", ">=", since));
-      sub("personnel", col("personnel"));
-      sub("contacts", col("contacts"));
-      sub("abonnes", col("abonnes"));
+    // Membres du complexe : chacun lit ce que son rôle permet. L'admin lit tout, pour la vue « Voir » d'un membre.
+    const adm = Compte.isAdmin();
+    if (account.active && (!["joueur", "capitaine"].includes(account.role) || adm)) {
+      sub("caisse", col("caisse").where("date", ">=", dkey(addDays(today(), -62))), !adm);
+      sub("personnel", col("personnel"), !adm);
+      sub("contacts", col("contacts"), !adm);
+      sub("abonnes", col("abonnes"), !adm);
     } else one("abonnes", account.uid);
   }
   // Un nouveau rendu groupé, sans effacer ce que l'utilisateur est en train de taper
@@ -258,7 +263,39 @@
   }
 
   const myTeam = () => S.teams.find((t) => t.id === S.me.teamId);
-  const isStaff = () => S.me.role === "gerant" || S.me.role === "personnel";
+  /* ---------- Rôles du complexe ---------- */
+  // Le propriétaire (niveau 100, donné par l'admin de l'appli) a tous les droits. Il crée les autres rôles dans les réglages,
+  // chacun avec un niveau (1 à 99) et des droits. Un membre ne donne un rôle qu'en dessous de son propre niveau.
+  const DROITS = [["planning", "Planning", "valider les acomptes, réservations par téléphone, sessions"], ["caisse", "Caisse", "encaisser, reçus et recettes"],
+    ["scores", "Scores", "saisir les scores, classement"], ["abonnements", "Abonnements", "activer les abonnements des joueurs"],
+    ["personnel", "Horaires", "tenir la liste de l'équipe et ses horaires"], ["tarifs", "Prix", "changer les prix, l'acompte et les sessions"],
+    ["membres", "Membres", "donner les rôles aux comptes, sous son propre niveau"]];
+  // Rôles de départ, tant que le propriétaire n'a rien changé (les mêmes sont écrits dans firestore.rules)
+  const ROLES_BASE = { gerant: { nom: "Gérant", niveau: 80, droits: ["planning", "caisse", "scores", "abonnements", "personnel", "tarifs", "membres"] },
+    caissier: { nom: "Caissier", niveau: 50, droits: ["planning", "caisse", "abonnements"] },
+    personnel: { nom: "Personnel", niveau: 30, droits: ["planning", "scores"] } };
+  const roles = () => { const r = src().reglages.roles; return (r && r.roles) || ROLES_BASE; };
+  const roleName = (r) => (r === "proprietaire" ? "Propriétaire" : r === "joueur" ? "Joueur" : r === "capitaine" ? "Capitaine" : (roles()[r] || {}).nom || "Joueur");
+  const niveau = (r) => (r === "proprietaire" ? 100 : roles()[r] ? Math.min(99, roles()[r].niveau || 0) : 0);
+  const memberRole = (r) => r === "proprietaire" || !!roles()[r];
+  const can = (d, r = S.me.role) => r === "proprietaire" || ((roles()[r] || {}).droits || []).includes(d);
+  const isStaff = () => memberRole(S.me.role);
+  // Tous les rôles, du plus haut au plus bas
+  const allRoles = () => [["proprietaire", "Propriétaire"], ...Object.entries(roles()).sort((a, b) => (b[1].niveau || 0) - (a[1].niveau || 0)).map(([k, v]) => [k, v.nom]), ["capitaine", "Capitaine"], ["joueur", "Joueur"]];
+
+  /* ---------- Prix modifiables ---------- */
+  // config.js donne les prix de départ ; le propriétaire (ou un rôle avec le droit Prix) les change dans les réglages
+  const TARIFS = [["creuse", "Créneau heures creuses", "F"], ["pleine", "Créneau heures pleines et week-end", "F"], ["heurePleine", "Début des heures pleines", "h"], ["acompte", "Acompte pour bloquer un créneau", "F"],
+    ["prixJoueur", "Session : place joueur", "F"], ["prixAbonne", "Session : place abonné", "F"], ["abonnementMois", "Abonnement joueur par mois", "F"], ["minJoueurs", "Session : joueurs pour lancer le match", ""], ["maxJoueurs", "Session : joueurs au plus", ""]];
+  const BASE_T = { creuse: C.tarifs.creuse, pleine: C.tarifs.pleine, heurePleine: C.tarifs.heurePleine, acompte: C.acompte, prixJoueur: C.sessions.prixJoueur, prixAbonne: C.sessions.prixAbonne,
+    abonnementMois: C.sessions.abonnementMois, minJoueurs: C.sessions.minJoueurs, maxJoueurs: C.sessions.maxJoueurs };
+  function applyTarifs(t) {
+    const x = { ...BASE_T, ...(t || {}) };
+    Object.assign(C.tarifs, { creuse: x.creuse, pleine: x.pleine, heurePleine: x.heurePleine });
+    C.acompte = x.acompte;
+    Object.assign(C.sessions, { prixJoueur: x.prixJoueur, prixAbonne: x.prixAbonne, abonnementMois: x.abonnementMois, minJoueurs: x.minJoueurs, maxJoueurs: x.maxJoueurs });
+  }
+  const tarifs = () => Object.fromEntries(TARIFS.map(([k]) => [k, { ...BASE_T, ...(src().reglages.tarifs || {}) }[k]]));
   const level = (elo) => (elo >= 1200 ? "Costaud" : elo >= 1080 ? "Moyen" : "Détente");
   const standings = () => [...S.teams].sort((a, b) => b.elo - a.elo);
   // Change le profil : en ligne pour un compte, sinon sur ce téléphone
@@ -282,6 +319,7 @@
     matchs: '<circle cx="12" cy="12" r="9"/><path d="m12 7 4 3-1.5 5h-5L8 10z"/><path d="M12 3v4M21 10l-5 0M3 10h5M15 15l3 5M9 15l-3 5"/>',
     profil: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
     gerant: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    reglages: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>',
     admin: '<path d="M12 3 4 6v6c0 5 3.4 8.3 8 9.5 4.6-1.2 8-4.5 8-9.5V6z"/><path d="m9 12 2 2 4-4"/>',
   };
   const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
@@ -417,12 +455,11 @@
   const findBk = (k, h, ti) => S.bookings.find((b) => b.date === k && b.hour === h && b.terrain === ti);
 
   function viewPlanning() {
-    const days = [...Array(7)].map((_, i) => addDays(today(), i));
     const mine = S.bookings.filter((b) => b.mine && !isPast(b.date, b.hour)).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
     return `<main class="wrap">
       <section>
         <h2>Planning</h2>
-        <div class="days" role="group" aria-label="Choisir le jour">${days.map((d) => `<button data-day="${dkey(d)}" aria-pressed="${dkey(d) === planDay}"><span>${JOURS[d.getDay()]}</span><b class="num">${d.getDate()}</b></button>`).join("")}</div>
+        ${calendar()}
         <div class="legend"><span><i style="border:1.5px dashed var(--turf)"></i>Libre</span><span><i style="background:var(--sess)"></i>Session joueurs seuls</span><span><i style="background:var(--bib)"></i>Cherche adversaire</span><span><i style="background:var(--warn-bg)"></i>En attente d'acompte</span><span><i style="background:var(--surface-2)"></i>Réservé</span></div>
         <p class="small muted">${dayLabel(planDay)} · ${isWeekend(planDay) ? "tarif week-end toute la journée" : `heures creuses avant ${hh(C.tarifs.heurePleine)}`}</p>
         <div class="grid" style="--cols:${C.terrains.length}">
@@ -435,6 +472,30 @@
         ${mine.length ? `<div class="list">${mine.map(myBookingCard).join("")}</div>` : `<div class="empty-state">Vos réservations apparaîtront ici. Touchez un créneau libre pour commencer.</div>`}
       </section>
     </main>`;
+  }
+
+  // Calendrier en carreaux : un mois d'un coup, chaque jour coloré selon son remplissage, pour planifier loin
+  const HORIZON = 120; // jours réservables à l'avance
+  let calMonth = 0; // 0 = mois en cours, 1 = mois suivant...
+  const MOIS_LONG = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+  function calendar() {
+    const t = today(), first = new Date(t.getFullYear(), t.getMonth() + calMonth, 1), nDays = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const last = dkey(addDays(t, HORIZON)), slotsDay = hours().length * C.terrains.length, mk = dkey(first).slice(0, 7);
+    const real = S.bookings.filter((b) => !b.virtual && b.date.startsWith(mk));
+    const byDay = real.reduce((m, b) => ((m[b.date] = (m[b.date] || 0) + 1), m), {});
+    const lead = (first.getDay() + 6) % 7; // semaine du lundi au dimanche
+    const cells = [...Array(lead)].map(() => "<span></span>").concat([...Array(nDays)].map((_, i) => {
+      const k = dkey(new Date(first.getFullYear(), first.getMonth(), i + 1)), n = byDay[k] || 0, past = k < dkey(t), off = k > last;
+      const pct = Math.round((n / slotsDay) * 100);
+      return `<button data-day="${k}" aria-pressed="${k === planDay}" ${past || off ? "disabled" : ""} class="${k === dkey(t) ? "today" : ""}" style="--f:${Math.min(100, pct)}%" aria-label="${dayLabel(k)} : ${n} réservé${n > 1 ? "s" : ""}"><b class="num">${i + 1}</b><i>${n ? n : ""}</i></button>`;
+    })).join("");
+    const booked = real.filter((b) => b.date >= dkey(t)).length, open = [...Array(nDays)].map((_, i) => dkey(new Date(first.getFullYear(), first.getMonth(), i + 1))).filter((k) => k >= dkey(t) && k <= last).length;
+    const money0 = real.filter((b) => b.status !== "absent").reduce((x, b) => x + (b.price || 0), 0);
+    return `<div class="card cal">
+      <div class="row"><button class="iconbtn" data-cal="-1" ${calMonth <= 0 ? "disabled" : ""} aria-label="Mois précédent">‹</button><h3 class="grow" style="text-align:center">${MOIS_LONG[first.getMonth()]} ${first.getFullYear()}</h3><button class="iconbtn" data-cal="1" ${dkey(first) > dkey(addDays(t, HORIZON - 28)) ? "disabled" : ""} aria-label="Mois suivant">›</button></div>
+      <div class="cal-grid">${["lun", "mar", "mer", "jeu", "ven", "sam", "dim"].map((j) => `<span class="cal-h">${j}</span>`).join("")}${cells}</div>
+      <p class="small muted">${open ? `À venir ce mois : <b>${booked}</b> créneau${booked > 1 ? "x" : ""} réservé${booked > 1 ? "s" : ""} sur ${open * slotsDay} (${Math.round((booked / (open * slotsDay)) * 100)} %)` : "Mois terminé"}${can("caisse") ? ` · recettes prévues du mois <b class="num">${money(money0)}</b>` : ""}. Plus la case est foncée, plus le jour est plein.</p>
+    </div>`;
   }
 
   function slotCell(k, h, ti) {
@@ -481,7 +542,7 @@
         (async () => {
           const team = await teamFor(name);
           if (!S.me.teamId) setMe({ equipe: team.id }).catch(() => {});
-          const bk = { date: k, hour: h, terrain: ti, price: price(k, h), team: team.name, teamId: team.id, opponent: "", opponentId: "", type, niveau, status: isStaff() ? "confirme" : "attente", by: myId(), createdAt: NOW };
+          const bk = { date: k, hour: h, terrain: ti, price: price(k, h), team: team.name, teamId: team.id, opponent: "", opponentId: "", type, niveau, status: can("planning") ? "confirme" : "attente", by: myId(), createdAt: NOW };
           await claim(id, bk);
           if (phone) put("contacts", id, { phone, name: S.me.name, by: myId() }).catch(fail("Téléphone de la réservation"));
           act(); paySheet({ ...bk, id, createdAt: Date.now() }); render();
@@ -691,7 +752,7 @@
   function joinSheet(id) {
     const b = S.bookings.find((x) => x.id === id);
     if (!S.me.name) { toast("Créez d'abord votre profil, ça prend 20 secondes"); location.hash = "profil"; return; }
-    const me = b.players.find((p) => p.uid === myId()), staff = isStaff();
+    const me = b.players.find((p) => p.uid === myId()), staff = can("caisse");
     const order = { Gardien: 0, "Défenseur": 1, Milieu: 2, Attaquant: 3 };
     const byPoste = POSTES.map((p) => `${p} : ${b.players.filter((x) => x.poste === p).length}`).join(" · ");
     const ref = "MS-" + b.id.slice(0, 4).toUpperCase();
@@ -704,7 +765,7 @@
         <a class="btn btn-turf btn-block" href="${waLink(msg, C.whatsapp)}" target="_blank" rel="noopener">Prévenir le complexe sur WhatsApp</a>
         <p class="small muted">Le complexe coche « payé » dès qu'il voit votre paiement.</p>`}
         <button class="btn btn-ghost btn-block" id="jLeave">Me désinscrire</button>`
-      : staff ? "" : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
+      : isStaff() ? "" : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
         <p class="small muted">Payez votre place par Wave pour la garder. Si la session n'atteint pas ${C.sessions.minJoueurs} joueurs, vous êtes remboursé.</p>`}`, (el) => {
       const j = el.querySelector("#jJoin"), l = el.querySelector("#jLeave"), n = b.players.length + 1;
       // Première inscription à une session automatique : on la crée en ligne ; sinon on ajoute seulement sa ligne
@@ -737,10 +798,12 @@
     });
   }
 
+  // Jours proposés dans les formulaires : la semaine, plus le jour choisi dans le calendrier
+  const pickDays = () => { const d = [...Array(7)].map((_, i) => dkey(addDays(today(), i))); return d.includes(planDay) || planDay < d[0] ? d : [...d, planDay]; };
   function openSessSheet() {
     sheet(`${head("Ouvrir une session", "Pour les joueurs sans équipe")}
       <form id="osForm" class="list">
-        <div class="row"><div class="field grow"><label for="oDay">Jour</label><select class="input" id="oDay">${[...Array(7)].map((_, i) => { const kk = dkey(addDays(today(), i)); return `<option value="${kk}">${dayLabel(kk)}</option>`; }).join("")}</select></div>
+        <div class="row"><div class="field grow"><label for="oDay">Jour</label><select class="input" id="oDay">${pickDays().map((kk) => `<option value="${kk}" ${kk === planDay ? "selected" : ""}>${dayLabel(kk)}</option>`).join("")}</select></div>
         <div class="field grow"><label for="oHour">Heure</label><select class="input" id="oHour">${hours().map((h) => `<option value="${h}" ${h === 17 ? "selected" : ""}>${hh(h)}</option>`).join("")}</select></div></div>
         <div class="field"><label for="oTer">Terrain</label><select class="input" id="oTer">${C.terrains.map((t, i) => `<option value="${i}">${esc(t)}</option>`).join("")}</select></div>
         <button class="btn btn-bib btn-block" type="submit">Ouvrir la session</button>
@@ -783,11 +846,11 @@
     const t = myTeam();
     if (!S.me.name || (Compte.enabled && !account)) return onboarding();
     const mt = S.bookings.filter((b) => (b.teamId === S.me.teamId || (t && b.opponent === t.name)) && isPast(b.date, b.hour)).length;
-    const roleName = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" }[S.me.role];
+    const roleLabel = roleName(S.me.role);
     return `<main class="wrap">
       <div class="player">
         <svg class="jersey" viewBox="0 0 84 84" aria-hidden="true"><path d="M26 8h32l18 12-8 14-8-4v46H24V30l-8 4-8-14z" fill="${t ? t.color : "#E9601A"}" stroke="#F4FFF8" stroke-width="2"/><text x="42" y="58" text-anchor="middle" font-family="Barlow Condensed, Arial Narrow, sans-serif" font-weight="800" font-size="26" fill="#F4FFF8">${esc(initials(S.me.name))}</text></svg>
-        <div><span class="label" style="color:inherit;opacity:.8">${roleName} · ${esc(S.me.poste)}</span><h2>${esc(S.me.name)}</h2><p>${t ? esc(t.name) : "Sans équipe"}</p></div>
+        <div><span class="label" style="color:inherit;opacity:.8">${esc(roleLabel)} · ${esc(S.me.poste)}</span><h2>${esc(S.me.name)}</h2><p>${t ? esc(t.name) : "Sans équipe"}</p></div>
         <div class="stats"><div><b class="num">${mt}</b><span>matchs</span></div><div><b class="num">${S.me.motm}</b><span>homme du match</span></div><div><b class="num">${S.me.slots.length}</b><span>dispos</span></div></div>
       </div>
       ${t ? `<section><div class="sec-head"><h2>Mon équipe</h2></div><div class="card">
@@ -829,7 +892,7 @@
 
   function onboarding() {
     if (Compte.enabled && !account) return signInView();
-    const m = S.me, staffRole = m.role === "gerant" || m.role === "personnel";
+    const m = S.me, staffRole = memberRole(m.role);
     return `<main class="wrap"><section>
       <h2>Mon profil</h2>
       <p class="muted">Créez votre profil pour réserver, rejoindre des matchs et suivre vos stats.</p>
@@ -837,8 +900,8 @@
         <div class="field"><label for="mName">Prénom et nom</label><input class="input" id="mName" required value="${esc(m.name)}" placeholder="Ex. Moussa Diop"></div>
         <div class="field"><span class="label">Poste</span><div class="choices">${POSTES.map((p) => `<label class="choice"><input type="radio" name="mPoste" value="${p}" ${m.poste === p ? "checked" : ""}><span>${p}</span></label>`).join("")}</div></div>
         <div class="field"><label for="mTeam">Équipe</label><select class="input" id="mTeam"><option value="">Pas encore d'équipe</option>${S.teams.map((t) => `<option value="${t.id}" ${t.id === m.teamId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
-        ${staffRole && Compte.enabled ? `<input type="radio" name="mRole" value="${m.role}" checked hidden><p class="small"><span class="chip chip-ok">${ROLE_NAMES[m.role]}</span> rôle donné par l'administrateur de l'appli</p>` : `<div class="field"><span class="label">Je suis</span><div class="choices">${(Compte.enabled ? [["joueur", "Joueur"], ["capitaine", "Capitaine"]] : Object.entries(ROLE_NAMES)).map(([k, l]) => `<label class="choice"><input type="radio" name="mRole" value="${k}" ${m.role === k ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
-          ${Compte.enabled ? '<span class="small muted">Gérant ou personnel du complexe : créez votre compte, puis demandez votre rôle à l\'administrateur de l\'appli.</span>' : ""}</div>`}
+        ${staffRole && Compte.enabled ? `<input type="radio" name="mRole" value="${m.role}" checked hidden><p class="small"><span class="chip chip-ok">${esc(roleName(m.role))}</span> rôle donné par ${m.role === "proprietaire" ? "l'administrateur de l'appli" : "le propriétaire du complexe"}</p>` : `<div class="field"><span class="label">Je suis</span><div class="choices">${(Compte.enabled ? [["joueur", "Joueur"], ["capitaine", "Capitaine"]] : Object.entries(LOCAL_ROLES)).map(([k, l]) => `<label class="choice"><input type="radio" name="mRole" value="${k}" ${m.role === k ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
+          ${Compte.enabled ? '<span class="small muted">Vous travaillez au complexe ? Créez votre compte, puis demandez votre rôle au propriétaire.</span>' : ""}</div>`}
         <div class="field" id="keyField" hidden><label for="mKey">Clé d'entrée</label><input class="input" id="mKey" autocomplete="off" placeholder="Donnée par le complexe"></div>
         ${account ? `<div class="row"><div class="field grow"><label for="mTel">Téléphone</label><input class="input" id="mTel" inputmode="tel" value="${esc(account.tel)}" placeholder="77 123 45 67"></div>
         <div class="field grow"><label for="mQuartier">Quartier</label><input class="input" id="mQuartier" value="${esc(account.quartier)}"></div></div>` : ""}
@@ -849,7 +912,8 @@
 
   /* ---------- Espace gérant ---------- */
   function viewGerant() {
-    if (!isStaff()) return `<main class="wrap"><section><h2>Espace gérant</h2><div class="empty-state">Réservé au gérant et au personnel du complexe. ${Compte.enabled ? "Le rôle est donné par l'administrateur de l'appli." : "Choisissez ce profil dans l'onglet Profil avec votre clé d'entrée."}</div><a class="btn btn-turf btn-block" href="#profil">Aller au profil</a></section></main>`;
+    if (!isStaff()) return `<main class="wrap"><section><h2>Gestion</h2><div class="empty-state">Réservé au propriétaire et à l'équipe du complexe. ${Compte.enabled ? "Le propriétaire donne les rôles depuis ses réglages." : "Choisissez ce profil dans l'onglet Profil avec votre clé d'entrée."}</div><a class="btn btn-turf btn-block" href="#profil">Aller au profil</a></section></main>`;
+    const cPlan = can("planning"), cCash = can("caisse");
     const k = dkey(today());
     const todays = S.bookings.filter((b) => b.date === k).sort((a, b) => a.hour - b.hour || a.terrain - b.terrain);
     const cashToday = S.receipts.filter((r) => r.date === k).reduce((s, r) => s + r.amount, 0);
@@ -858,7 +922,7 @@
     const waiting = S.bookings.filter((b) => b.status === "attente" && !isPast(b.date, b.hour)).length;
     const pending = S.bookings.filter((b) => b.status === "attente" && b.date > k).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
     const toCollect = todays.filter((b) => b.status !== "paye").reduce((s, b) => s + b.price, 0);
-    const month = S.receipts.reduce((s, r) => s + r.amount, 0);
+    const month = S.receipts.filter((r) => r.date.slice(0, 7) === k.slice(0, 7)).reduce((s, r) => s + r.amount, 0);
     const sessAll = openSessions();
 
     // Remplissage moyen par heure sur les 14 derniers jours
@@ -870,15 +934,15 @@
       <section>
         <div class="sec-head"><h2>Aujourd'hui</h2><span class="muted small">${dayLabel(k)}</span></div>
         <div class="kpis">
-          <div class="kpi lead"><span class="label">Encaissé aujourd'hui</span><b class="num">${money(cashToday)}</b><span class="small">Reste à encaisser : ${money(toCollect)}</span></div>
+          ${cCash ? `<div class="kpi lead"><span class="label">Encaissé aujourd'hui</span><b class="num">${money(cashToday)}</b><span class="small">Reste à encaisser : ${money(toCollect)}</span></div>` : ""}
           <div class="kpi"><span class="label">Remplissage</span><b class="num">${fill} %</b><span class="small muted">${todays.length} / ${slotsDay} créneaux</span></div>
           <div class="kpi"><span class="label">Acomptes attendus</span><b class="num">${waiting}</b><span class="small muted">${waiting ? "à vérifier sur Wave" : "rien en attente"}</span></div>
         </div>
-        <div class="row"><button class="btn btn-turf grow" id="addPhone">Ajouter une réservation téléphone</button></div>
+        ${cPlan ? '<div class="row"><button class="btn btn-turf grow" id="addPhone">Ajouter une réservation téléphone</button></div>' : ""}
         <div class="list">${todays.length ? todays.map((b) => staffBk(b)).join("") : '<div class="empty-state">Aucune réservation aujourd\'hui.</div>'}</div>
         ${pending.length ? `<h3>Acomptes à vérifier, prochains jours</h3><div class="list">${pending.map((b) => staffBk(b, true)).join("")}</div>` : ""}
       </section>
-      <section>
+      <section ${cPlan ? "" : "hidden"}>
         <div class="sec-head"><h2>Sessions joueurs seuls</h2><button class="link" id="openSess">Ouvrir une session</button></div>
         <div class="kpis">
           <div class="kpi"><span class="label">Inscrits cette semaine</span><b class="num">${sessAll.reduce((n, b) => n + b.players.length, 0)}</b><span class="small muted">sur ${sessAll.length} sessions</span></div>
@@ -887,7 +951,7 @@
         <p class="small muted">Une session pleine rapporte ${money(C.sessions.minJoueurs * C.sessions.prixJoueur)} à ${money(C.sessions.maxJoueurs * C.sessions.prixJoueur)}, contre ${money(C.tarifs.creuse)} pour un créneau creux loué à une équipe. Ouvrez-les sur les heures pâles du graphique.</p>
         <div class="list">${sessAll.slice(0, 4).map(sessionCard).join("")}</div>
       </section>
-      <section>
+      <section ${can("abonnements") ? "" : "hidden"}>
         <div class="sec-head"><h2>Abonnés</h2><span class="muted small">${money(C.sessions.abonnementMois)} / mois</span></div>
         ${aboList()}
       </section>
@@ -895,8 +959,8 @@
         <div class="sec-head"><h2>Heures qui remplissent</h2><span class="muted small">14 derniers jours</span></div>
         <div class="card">${hourChart(byHour)}<p class="small muted">En orange, l'heure la plus demandée. Les créneaux pâles sont ceux à pousser avec une promo ou un défi.</p></div>
       </section>
-      <section>
-        <div class="sec-head"><h2>Caisse</h2><span class="muted small num">${money(month)} sur 14 jours</span></div>
+      <section ${cCash ? "" : "hidden"}>
+        <div class="sec-head"><h2>Caisse</h2><span class="muted small num">${money(month)} ce mois-ci</span></div>
         <div class="card" style="padding:6px 10px"><table class="rank"><thead><tr><th>Reçu</th><th>Équipe</th><th>Mode</th><th class="n">Montant</th></tr></thead><tbody>
           ${S.receipts.length ? "" : '<tr><td colspan="4" class="muted small">Aucun reçu pour l\'instant.</td></tr>'}${[...S.receipts].reverse().slice(0, 8).map((r) => `<tr><td class="num">n° ${pad(r.n)}</td><td>${esc(r.team)}<div class="small muted">${dayLabel(r.date)} ${hh(r.hour)}</div></td><td>${r.by}</td><td class="n">${money(r.amount)}</td></tr>`).join("")}
         </tbody></table></div>
@@ -915,8 +979,8 @@
           <a class="btn btn-wa btn-block" href="${waLink(inviteText())}" target="_blank" rel="noopener">${WA_ICON}Envoyer le lien sur WhatsApp</a>
         </div>
       </section>
-      ${S.me.role === "gerant" ? `<section>
-        <div class="sec-head"><h2>Personnel</h2><button class="link" id="addStaff">Ajouter</button></div>
+      ${can("personnel") ? `<section>
+        <div class="sec-head"><h2>Équipe et horaires</h2><button class="link" id="addStaff">Ajouter</button></div>
         <div class="list">${S.staff.length ? "" : '<div class="empty-state">Ajoutez l\'équipe du complexe et ses horaires.</div>'}${S.staff.map((p) => `<div class="card"><div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><div class="grow"><b>${esc(p.name)}</b><div class="small muted">${esc(p.role)}</div></div><span class="chip chip-n num">${esc(p.shift)}</span><button class="link" style="color:var(--bad)" data-rmstaff="${p.id}">Retirer</button></div></div>`).join("")}</div>
       </section>` : ""}
     </main>`;
@@ -931,11 +995,11 @@
       <div><div class="row"><b class="grow">${b.type === "session" ? `Session : ${b.players.length}/${C.sessions.minJoueurs} joueurs` : esc(b.team)}${b.opponent ? ` vs ${esc(b.opponent)}` : b.type === "defi" ? " (cherche adversaire)" : ""}</b>${chip}</div>
         <div class="small muted">${withDay ? `${dayLabel(b.date)} · ` : ""}${esc(C.terrains[b.terrain])} · ${money(b.price)}${b.phone ? ` · ${esc(b.phone)}` : ""}${res ? ` · Score ${res.sa}-${res.sb}` : ""}</div>
         <div class="acts">
-          ${b.status === "attente" ? `<button class="btn btn-turf btn-sm" data-confirm="${b.id}">Acompte reçu</button>` : ""}
+          ${b.status === "attente" && (can("planning") || can("caisse")) ? `<button class="btn btn-turf btn-sm" data-confirm="${b.id}">Acompte reçu</button>` : ""}
           ${b.type === "session" ? `<button class="btn btn-ghost btn-sm" data-sess="${b.id}">Voir les inscrits (${b.players.filter((x) => x.paid).length} payés)</button>` : ""}
-          ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" ? `<button class="btn btn-bib btn-sm" data-cash="${b.id}">Encaisser</button>` : ""}
-          ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" && past ? `<button class="btn btn-ghost btn-sm" data-absent="${b.id}">Pas venu</button>` : ""}
-          ${past && b.opponent && !res ? `<button class="btn btn-ghost btn-sm" data-score="${b.id}">Saisir le score</button>` : ""}
+          ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" && can("caisse") ? `<button class="btn btn-bib btn-sm" data-cash="${b.id}">Encaisser</button>` : ""}
+          ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" && past && can("planning") ? `<button class="btn btn-ghost btn-sm" data-absent="${b.id}">Pas venu</button>` : ""}
+          ${past && b.opponent && !res && can("scores") ? `<button class="btn btn-ghost btn-sm" data-score="${b.id}">Saisir le score</button>` : ""}
         </div></div>
     </div>`;
   }
@@ -996,7 +1060,7 @@
     const k = dkey(today());
     sheet(`${head("Réservation par téléphone")}
       <form id="phForm" class="list">
-        <div class="row"><div class="field grow"><label for="pDay">Jour</label><select class="input" id="pDay">${[...Array(7)].map((_, i) => { const kk = dkey(addDays(today(), i)); return `<option value="${kk}">${dayLabel(kk)}</option>`; }).join("")}</select></div>
+        <div class="row"><div class="field grow"><label for="pDay">Jour</label><select class="input" id="pDay">${pickDays().map((kk) => `<option value="${kk}" ${kk === planDay ? "selected" : ""}>${dayLabel(kk)}</option>`).join("")}</select></div>
         <div class="field grow"><label for="pHour">Heure</label><select class="input" id="pHour">${hours().map((h) => `<option value="${h}" ${h === 20 ? "selected" : ""}>${hh(h)}</option>`).join("")}</select></div></div>
         <div class="field"><label for="pTer">Terrain</label><select class="input" id="pTer">${C.terrains.map((t, i) => `<option value="${i}">${esc(t)}</option>`).join("")}</select></div>
         <div class="field"><label for="pTeam">Équipe</label><input class="input" id="pTeam" required list="tl3"><datalist id="tl3">${S.teams.map((x) => `<option value="${esc(x.name)}">`).join("")}</datalist></div>
@@ -1045,6 +1109,83 @@
     sheet(`${head("Export de la caisse", `${S.receipts.length} reçus`)}<p class="small muted">Si le fichier ne s'est pas téléchargé, copiez le texte et collez-le dans Excel.</p><textarea class="input small" id="csvBox" rows="8" readonly>${esc(csv)}</textarea><button class="btn btn-turf btn-block" data-copy="${esc(csv)}">Copier</button>`);
   }
 
+  /* ---------- Réglages du complexe ---------- */
+  // Prix (droit Prix), rôles de l'équipe (propriétaire seulement) et rôle de chaque compte (droit Membres)
+  let rolesDraft = null, membres = null, membreQuery = "";
+  const isOwner = () => S.me.role === "proprietaire";
+  const canReglages = () => can("tarifs") || can("membres") || isOwner();
+
+  function viewReglages() {
+    if (!canReglages()) return `<main class="wrap"><section><h2>Réglages</h2><div class="empty-state">Réservé au propriétaire du complexe.</div></section></main>`;
+    const t = tarifs();
+    return `<main class="wrap">
+      ${can("tarifs") ? `<section>
+        <h2>Prix</h2>
+        <p class="muted small">Changez-les quand vous voulez : les nouveaux prix s'affichent tout de suite sur tous les téléphones. Les réservations déjà faites gardent leur prix.</p>
+        <form id="tarifForm" class="card list">
+          ${TARIFS.map(([k, l, u]) => `<div class="row"><label class="grow" for="t_${k}">${l}</label><input class="input input-sm num" style="width:110px" id="t_${k}" data-t="${k}" type="number" min="${k === "heurePleine" ? C.ouverture : 0}" max="${k === "heurePleine" ? C.fermeture : k.endsWith("Joueurs") ? 30 : 1000000}" step="${u === "F" ? 500 : 1}" required value="${t[k]}"><span class="small muted" style="width:14px">${u}</span></div>`).join("")}
+          <button class="btn btn-bib btn-block" type="submit">Enregistrer les prix</button>
+        </form>
+      </section>` : ""}
+      ${isOwner() ? rolesSection() : ""}
+      ${can("membres") ? membresSection() : ""}
+    </main>`;
+  }
+
+  function rolesSection() {
+    if (!rolesDraft) rolesDraft = JSON.parse(JSON.stringify(roles()));
+    const list = Object.entries(rolesDraft).sort((a, b) => (b[1].niveau || 0) - (a[1].niveau || 0));
+    return `<section>
+      <h2>Rôles de l'équipe</h2>
+      <p class="muted small">Créez les rôles de votre complexe et choisissez ce que chacun peut faire. Le niveau fixe la hiérarchie : un membre ne donne un rôle qu'en dessous du sien. Vous êtes Propriétaire, niveau 100.</p>
+      <form id="rolesForm" class="list">
+        ${list.map(([id, r]) => `<fieldset class="card list" data-rid="${esc(id)}">
+          <div class="row"><input class="input grow" data-rnom value="${esc(r.nom)}" maxlength="30" required aria-label="Nom du rôle"><label class="small muted" for="niv_${esc(id)}">Niveau</label><input class="input input-sm num" style="width:64px" id="niv_${esc(id)}" data-rniv type="number" min="1" max="99" required value="${r.niveau || 1}"></div>
+          <div class="choices">${DROITS.map(([d, l, help]) => `<label class="choice" title="${esc(help)}"><input type="checkbox" data-rdroit="${d}" ${(r.droits || []).includes(d) ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
+          <div class="row"><span class="small muted grow">${DROITS.filter(([d]) => (r.droits || []).includes(d)).map(([, , h]) => h).join(" ; ") || "Aucun droit : il voit seulement l'espace Gestion."}</span><button type="button" class="link" style="color:var(--bad)" data-rdel="${esc(id)}">Supprimer</button></div>
+        </fieldset>`).join("")}
+        <button type="button" class="btn btn-ghost btn-block" id="addRole">Ajouter un rôle</button>
+        <button class="btn btn-bib btn-block" type="submit">Enregistrer les rôles</button>
+      </form>
+    </section>`;
+  }
+  // Lit le formulaire des rôles (pour garder ce qui est tapé avant d'ajouter ou de supprimer un rôle)
+  function readRoles() {
+    const out = {};
+    document.querySelectorAll("#rolesForm [data-rid]").forEach((f) => {
+      out[f.dataset.rid] = { nom: f.querySelector("[data-rnom]").value.trim() || "Rôle", niveau: Math.max(1, Math.min(99, Math.round(+f.querySelector("[data-rniv]").value || 1))),
+        droits: [...f.querySelectorAll("[data-rdroit]:checked")].map((x) => x.dataset.rdroit) };
+    });
+    return out;
+  }
+
+  function loadMembres() {
+    if (mode && mode.type === "demo") { membres = demoAdmin().users; return; }
+    if (!Compte.enabled) { membres = []; return; }
+    membres = { loading: true };
+    Compte.admin.users().then((u) => { membres = u; }, (e) => { membres = { fail: e.code || e.message }; }).then(() => { if (current() === "reglages") render(); });
+  }
+  function membresSection() {
+    if (!Compte.enabled) return '<section><h2>Membres</h2><div class="empty-state">Les membres arrivent avec les comptes en ligne.</div></section>';
+    if (!membres) loadMembres();
+    const mine = niveau(S.me.role), q = membreQuery.toLowerCase();
+    const body = membres.loading ? '<div class="empty-state">Chargement des comptes...</div>' : membres.fail ? `<div class="empty-state">Lecture refusée (${esc(membres.fail)}).</div>` : (() => {
+      const list = membres.filter((u) => !q || `${u.name} ${u.quartier} ${u.tel} ${roleName(u.role)}`.toLowerCase().includes(q))
+        .sort((a, b) => niveau(b.role) - niveau(a.role) || String(a.name).localeCompare(String(b.name)));
+      const opts = allRoles().filter(([k]) => niveau(k) < mine);
+      return `<div class="list">${list.length ? list.slice(0, 60).map((u) => `<div class="card"><div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span>
+        <div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted">${esc([u.quartier, u.tel].filter(Boolean).join(" · ")) || "&nbsp;"}</div></div>
+        ${u.uid === myId() || niveau(u.role) >= mine ? `<span class="chip chip-n">${esc(roleName(u.role))}</span>`
+          : `<select class="input input-sm" data-mrole="${esc(u.uid)}" aria-label="Rôle de ${esc(u.name || "ce compte")}">${opts.map(([k, l]) => `<option value="${k}" ${u.role === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`}</div></div>`).join("") : '<div class="empty-state">Aucun compte ne correspond.</div>'}</div>`;
+    })();
+    return `<section>
+      <div class="sec-head"><h2>Membres</h2><button class="link" id="membresReload">Actualiser</button></div>
+      <p class="muted small">Chaque personne crée son compte dans l'appli, puis vous lui donnez son rôle ici. Vous ne voyez pas les rôles au-dessus du vôtre.</p>
+      <input class="input" id="membreSearch" type="search" placeholder="Chercher un nom, un quartier, un téléphone" value="${esc(membreQuery)}">
+      ${body}
+    </section>`;
+  }
+
   /* ---------- Espace admin ---------- */
   // Réservé aux comptes listés dans C.admins ; les règles Firestore refusent ces lectures à tout autre compte.
   // Sans Firebase, #admin montre un aperçu avec des comptes fictifs.
@@ -1055,7 +1196,8 @@
   const logRefus = (msg) => Compte.logError("refus", msg);
   Compte.setRole(() => S.me.role);
   const canAdmin = () => Compte.isAdmin() || (!Compte.enabled && location.hash === "#admin");
-  const ROLE_NAMES = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" };
+  // Sans Firebase seulement : rôles choisis avec une clé d'entrée
+  const LOCAL_ROLES = { joueur: "Joueur", capitaine: "Capitaine", personnel: "Personnel", gerant: "Gérant" };
   const toDate = (t) => (t && t.toDate ? t.toDate() : t ? new Date(t) : null);
   const ago = (d) => {
     if (!d) return "jamais";
@@ -1129,28 +1271,28 @@
         <input class="input" id="adminSearch" type="search" placeholder="Chercher un nom, un quartier, un téléphone" value="${esc(adminQuery)}">
         <div class="choices" role="group" aria-label="Filtrer par état">${FILTERS.map(([k, l]) => `<button class="fchip" data-afilter="${k}" aria-pressed="${adminFilter === k}">${l} <span class="num">${k === "tous" ? users.length : count(k)}</span></button>`).join("")}</div>
         <div class="list">${list.length ? list.map((u) => { const [st, cls] = userState(u), n = week(u), e = errors.filter((x) => x.uid === u.uid).length; return `<div class="card">
-          <div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span><div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(ROLE_NAMES[u.role] || "Joueur")}${u.quartier ? ` · ${esc(u.quartier)}` : ""}${u.tel ? ` · ${esc(u.tel)}` : ""}</div></div><span class="chip chip-${cls}">${st}</span></div>
+          <div class="row"><span class="avatars"><i>${initials(u.name || u.email)}</i></span><div class="grow" style="min-width:0"><b>${esc(u.name || "Sans nom")}</b><div class="small muted" style="overflow-wrap:anywhere">${esc(roleName(u.role))}${u.quartier ? ` · ${esc(u.quartier)}` : ""}${u.tel ? ` · ${esc(u.tel)}` : ""}</div></div><span class="chip chip-${cls}">${st}</span></div>
           <div class="small muted">Inscrit ${ago(u.created)} · vu ${ago(u.lastSeen)} · <b style="color:var(--ink)">${n} action${n > 1 ? "s" : ""}</b> cette semaine (réservations, sessions, défis)${e ? ` · <b style="color:var(--bad)">${e} erreur${e > 1 ? "s" : ""}</b>` : ""}</div>
           <div class="row">${u.uid === (account && account.uid) ? "" : `<button class="btn ${u.active ? "btn-ghost" : "btn-turf"} btn-sm" data-toggle="${esc(u.uid)}" data-active="${u.active ? "0" : "1"}">${u.active ? "Suspendre" : "Réactiver"}</button>`}
             ${u.tel ? `<a class="btn btn-wa btn-sm" href="${waLink(`Bonjour ${u.name || ""}, ici l'équipe de l'appli ${C.nomCourt}. `, telWa(u.tel))}" target="_blank" rel="noopener">${WA_ICON}WhatsApp</a>` : ""}
             <button class="btn btn-bib btn-sm" data-voir="${esc(u.uid)}">Voir</button>
-            <select class="input input-sm" data-role="${esc(u.uid)}" aria-label="Rôle de ${esc(u.name || "ce client")}">${Object.entries(ROLE_NAMES).map(([k, l]) => `<option value="${k}" ${u.role === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+            <select class="input input-sm" data-role="${esc(u.uid)}" aria-label="Rôle de ${esc(u.name || "ce client")}">${allRoles().map(([k, l]) => `<option value="${k}" ${u.role === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
         </div>`; }).join("") : '<div class="empty-state">Aucun client ne correspond.</div>'}</div>
-        <p class="small muted">« Voir » ouvre l'appli comme ce client la voit, avec son rôle, en lecture seule : rien n'est enregistré. Le rôle Gérant ou Personnel ouvre l'espace gérant du complexe à ce compte.</p>
+        <p class="small muted">« Voir » ouvre l'appli comme ce client la voit, avec son rôle, en lecture seule : rien n'est enregistré. Donnez le rôle Propriétaire au responsable du complexe : il crée ensuite ses propres rôles et les donne à son équipe.</p>
       </section>
       <section>
         <h2>Erreurs des 7 derniers jours</h2>
         <div class="list">${errors.length ? errors.map((e) => `<div class="card">
           <div class="row">${e.kind === "plantage" ? '<span class="chip chip-bad">Plantage</span>' : '<span class="chip chip-warn">Écriture refusée</span>'}<span class="small muted">${ago(e.at)} · écran ${esc(e.route || "accueil")}</span><button class="link" style="margin-left:auto" data-delerr="${esc(e.id)}">Effacer</button></div>
           <p style="overflow-wrap:anywhere">${esc(e.msg)}</p>
-          <p class="small muted">${esc(e.name || e.uid)} · ${esc(ROLE_NAMES[e.role] || e.role || "visiteur")} · ${esc(/iPhone|iPad/.test(e.ua || "") ? "iPhone" : /Android/.test(e.ua || "") ? "Android" : "Ordinateur")}</p>
+          <p class="small muted">${esc(e.name || e.uid)} · ${esc(e.role === "visiteur" || !e.role ? "visiteur" : roleName(e.role))} · ${esc(/iPhone|iPad/.test(e.ua || "") ? "iPhone" : /Android/.test(e.ua || "") ? "Android" : "Ordinateur")}</p>
         </div>`).join("") : '<div class="empty-state">Aucune erreur. Tout marche.</div>'}</div>
       </section>
     </main>`;
   }
 
   function setRole(uid, role) {
-    const u = adminData.users.find((x) => x.uid === uid), done = () => { u.role = role; render(); toast(`${u.name || "Compte"} : ${ROLE_NAMES[role]}`); };
+    const u = adminData.users.find((x) => x.uid === uid), done = () => { u.role = role; render(); toast(`${u.name || "Compte"} : ${roleName(role)}`); };
     if (!Compte.enabled) return done();
     Compte.admin.setRole(uid, role).then(done, () => { toast("Refusé : ce compte n'est pas admin dans les règles Firebase"); render(); });
   }
@@ -1168,21 +1310,21 @@
     if (!who) return toast("Compte introuvable");
     mode = { type: "voir", who };
     modeMe = { name: who.name || "Client", role: who.role || "joueur", poste: who.poste || "Milieu", equipe: who.equipe || "" };
-    derive(); location.hash = who.role === "gerant" || who.role === "personnel" ? "gerant" : "accueil"; render();
+    derive(); location.hash = memberRole(who.role) ? "gerant" : "accueil"; render();
   }
   // Présentation : données d'exemple neuves, rôle choisi dans la barre du haut
   function startDemo(role) {
     if (!mode || mode.type !== "demo") { DEMO = seed(); modeMe = { name: "Démo", poste: "Milieu", equipe: "t0" }; }
     modeMe.role = role; mode = { type: "demo" };
-    derive(); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "accueil"; render();
+    derive(); location.hash = memberRole(role) ? "gerant" : "accueil"; render();
   }
   function stopMode() { mode = null; modeMe = null; DEMO = null; adminData = null; derive(); location.hash = "admin"; render(); }
   function modeBar() {
     if (!mode) return "";
-    const roles = Object.entries(ROLE_NAMES);
+    const list = allRoles().reverse();
     return `<div class="modebar"><div class="wrap">${mode.type === "voir"
-      ? `<span class="small">Vue de <b>${esc(mode.who.name || "client")}</b> (${esc(ROLE_NAMES[S.me.role])}) · lecture seule</span>`
-      : `<span class="small"><b>Présentation</b></span>${roles.map(([k, l]) => `<button class="fchip fchip-sm" data-demorole="${k}" aria-pressed="${S.me.role === k}">${l}</button>`).join("")}`}
+      ? `<span class="small">Vue de <b>${esc(mode.who.name || "client")}</b> (${esc(roleName(S.me.role))}) · lecture seule</span>`
+      : `<span class="small"><b>Présentation</b></span>${list.map(([k, l]) => `<button class="fchip fchip-sm" data-demorole="${k}" aria-pressed="${S.me.role === k}">${esc(l)}</button>`).join("")}`}
       <button class="iconbtn" data-stopmode aria-label="Quitter">×</button></div></div>`;
   }
   // En lecture seule, les boutons qui enregistrent quelque chose sont bloqués
@@ -1200,14 +1342,14 @@
   }
 
   /* ---------- Navigation et événements ---------- */
-  const VIEWS = { accueil: viewAccueil, planning: viewPlanning, matchs: viewMatchs, profil: viewProfil, gerant: viewGerant, admin: viewAdmin };
-  const LABELS = { accueil: "Accueil", planning: "Planning", matchs: "Jouer", profil: "Profil", gerant: "Gérant", admin: "Admin" };
+  const VIEWS = { accueil: viewAccueil, planning: viewPlanning, matchs: viewMatchs, profil: viewProfil, gerant: viewGerant, reglages: viewReglages, admin: viewAdmin };
+  const LABELS = { accueil: "Accueil", planning: "Planning", matchs: "Jouer", profil: "Profil", gerant: "Gestion", reglages: "Réglages", admin: "Admin" };
   const current = () => { const h = location.hash.slice(1); return VIEWS[h] ? h : "accueil"; };
 
   function render() {
     derive();
     const v = current();
-    const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "admin" || (canAdmin() && !mode)));
+    const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "reglages" || canReglages()) && (k !== "admin" || (canAdmin() && !mode)));
     if (account && !account.active) {
       $("#app").innerHTML = `<header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span></div></header>${suspendedView()}`;
       $("#signOut").addEventListener("click", () => Compte.signOut().then(() => { account = null; render(); }));
@@ -1235,11 +1377,12 @@
         if (account) Object.assign(p, { tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "" });
         setMe(p).then(() => toast("Profil enregistré"), fail("Profil"));
         if (account) put("dispos", myId(), { name: p.name, poste: p.poste, slots: S.me.slots }).catch(() => {});
-        location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render();
+        location.hash = memberRole(role) ? "gerant" : "profil"; render();
       });
     }
     const on = (sel, fn) => app.querySelectorAll(sel).forEach((el) => el.addEventListener("click", (e) => fn(el, e)));
-    on("[data-day]", (el) => { planDay = el.dataset.day; render(); });
+    on("[data-day]", (el) => { planDay = el.dataset.day; render(); const g = $(".grid"); g && g.scrollIntoView({ behavior: "smooth", block: "start" }); });
+    on("[data-cal]", (el) => { calMonth = Math.max(0, calMonth + +el.dataset.cal); render(); });
     on("[data-book]", (el) => { const [k, h, ti] = el.dataset.book.split("|"); bookSheet(k, +h, +ti, pendingDefi); pendingDefi = false; });
     on("[data-defi]", (el) => acceptSheet(el.dataset.defi));
     on("[data-sess]", (el) => joinSheet(el.dataset.sess));
@@ -1276,6 +1419,29 @@
     on("[data-absent]", (el) => patch("creneaux", el.dataset.absent, { status: "absent" }).catch(fail("Absence")));
     on("[data-score]", (el) => scoreSheet(el.dataset.score));
     on("#exportCsv", exportCsv);
+    const tf = $("#tarifForm");
+    tf && tf.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const v = Object.fromEntries([...tf.querySelectorAll("[data-t]")].map((x) => [x.dataset.t, Math.round(+x.value)]));
+      if (v.minJoueurs > v.maxJoueurs) return toast("Le nombre de joueurs au plus doit être au moins égal au minimum");
+      put("reglages", "tarifs", v).then(() => toast("Prix enregistrés"), fail("Prix"));
+    });
+    const rf = $("#rolesForm");
+    if (rf) {
+      rf.addEventListener("submit", (e) => { e.preventDefault(); const r = readRoles(); put("reglages", "roles", { roles: r }).then(() => { rolesDraft = null; toast("Rôles enregistrés"); }, fail("Rôles")); });
+      on("#addRole", () => { rolesDraft = readRoles(); rolesDraft["r" + uid()] = { nom: "Nouveau rôle", niveau: 10, droits: [] }; render(); });
+      on("[data-rdel]", (el) => { rolesDraft = readRoles(); delete rolesDraft[el.dataset.rdel]; render(); toast("Rôle retiré : enregistrez pour confirmer"); });
+    }
+    app.querySelectorAll("[data-mrole]").forEach((el) => el.addEventListener("change", () => {
+      const u = membres.find((x) => x.uid === el.dataset.mrole);
+      if (mode && mode.type === "voir") { toast("Vue en lecture seule : rien n'est modifié"); return render(); }
+      const done = () => { u.role = el.value; toast(`${u.name || "Compte"} : ${roleName(el.value)}`); render(); };
+      if (!Compte.enabled || mode) return done();
+      Compte.admin.setRole(u.uid, el.value).then(done, (e) => { fail("Rôle d'un membre")(e); });
+    }));
+    on("#membresReload", () => { membres = null; render(); });
+    const ms = $("#membreSearch");
+    ms && ms.addEventListener("input", () => { membreQuery = ms.value; const pos = ms.selectionStart; render(); const m2 = $("#membreSearch"); m2.focus(); m2.setSelectionRange(pos, pos); });
     on("[data-afilter]", (el) => { adminFilter = el.dataset.afilter; render(); });
     on("[data-voir]", (el) => startVoir(el.dataset.voir));
     on("#startDemo", () => startDemo("joueur"));
@@ -1302,7 +1468,7 @@
   }
   let pendingDefi = false;
 
-  window.addEventListener("hashchange", () => { closeSheet(); if (current() === "admin") adminData = null; render(); window.scrollTo(0, 0); });
+  window.addEventListener("hashchange", () => { closeSheet(); if (current() === "admin") adminData = null; if (current() === "reglages") { membres = null; rolesDraft = null; } render(); window.scrollTo(0, 0); });
   derive(); render();
   if (Compte.enabled) Compte.start().then((p) => { account = p; listen(); derive(); render(); }, (e) => { console.warn(e); toast("Connexion au serveur impossible, vérifiez Internet puis rouvrez l'appli"); });
   setInterval(() => { if (current() === "planning" && !$("#scrim")) render(); }, 60000);

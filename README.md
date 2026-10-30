@@ -17,7 +17,14 @@ En ligne : https://kanelimamou-blip.github.io/momo-foot/
 - `creneaux/{date_heure_terrain}` : réservations, défis et sessions « Je veux jouer ». Un document par créneau, donc deux téléphones ne prennent jamais le même. Un joueur réserve « en attente d'acompte » ; le gérant valide l'acompte. Après 15 min sans acompte, le créneau se libère. Les sessions automatiques de la semaine (`config.sessions.auto`) s'affichent seules et se créent à la première inscription ; chaque joueur n'ajoute ou ne retire que sa propre ligne, et seul le personnel coche « payé ».
 - `equipes`, `resultats` (scores publiés par le personnel, qui met à jour le classement), `annonces` (« il manque des joueurs »), `dispos/{uid}`.
 - Réservé au personnel : `caisse` (reçus numérotés, jamais effacés, numéro suivi dans `meta/caisse`), `personnel`, `contacts` (téléphone de la réservation), `abonnes/{uid}` (le joueur signale son paiement Wave, le gérant active 30 jours).
-- Gérant et personnel : le compte est créé dans l'appli, puis l'admin choisit son rôle dans `#admin`. Un client ne peut pas se donner ce rôle.
+- `reglages/tarifs` : prix modifiables dans l'onglet Réglages (créneaux, heure pleine, acompte, places de session, abonnement, nombre de joueurs). `config.js` ne donne que les prix de départ.
+- `reglages/roles` : les rôles du complexe, libres. Chaque rôle a un nom, un niveau (1 à 99) et des droits : Planning, Caisse, Scores, Abonnements, Horaires, Prix, Membres. Rôles de départ : Gérant (80), Caissier (50), Personnel (30).
+
+## Propriétaire et rôles
+
+L'admin de l'appli (celui qui la vend) donne le rôle **Propriétaire** (niveau 100, tous les droits) au responsable du complexe, depuis `#admin`. Le propriétaire crée ensuite ses rôles dans Réglages et les donne aux comptes de son équipe (section Membres). Un membre avec le droit Membres ne donne que des rôles sous son propre niveau, à des comptes sous son niveau ; personne d'autre que l'admin ne nomme un propriétaire. L'admin peut garder pour lui le rôle Joueur.
+
+Le planning s'ouvre sur un calendrier en carreaux (un mois, jusqu'à 120 jours à l'avance), chaque jour coloré selon son remplissage, avec les recettes prévues du mois pour les rôles qui ont la Caisse.
 
 ## Comptes et espace admin
 
@@ -27,7 +34,7 @@ En ligne : https://kanelimamou-blip.github.io/momo-foot/
 
 Pas de paiement de licence dans l'appli ni de blocage automatique : le propriétaire encaisse les abonnements lui-même. Les paiements Wave des joueurs (acomptes, places en session, abonnement joueur) sont ceux du complexe et ne bloquent rien.
 
-Tests (émulateurs Firebase) : `npm run test:regles` (97 cas sur les règles) et `tests/e2e.cjs` (30 vérifications de bout en bout sur deux téléphones : réservation vue en direct, inscription à une session, rôle gérant donné par l'admin, acompte validé, connexion admin, liste, erreur remontée, suspension, vue d'un client en lecture seule, présentation).
+Tests (émulateurs Firebase) : `npm run test:regles` (126 cas sur les règles) et `tests/e2e.cjs` (35 vérifications de bout en bout sur deux téléphones : réservation vue en direct, inscription à une session, propriétaire nommé par l'admin, prix changé et vu en direct, rôle créé et donné à un membre, acompte validé, connexion admin, liste, erreur remontée, suspension, vue d'un client en lecture seule, présentation).
 
 ## Sans Firebase
 
