@@ -1,5 +1,5 @@
 // Tout ce qui change d'un complexe à l'autre est ici : c'est ce fichier qu'on adapte pour revendre l'appli.
-// Les valeurs ci-dessous sont des valeurs de démo, à remplacer par les vraies infos de Momo Foot.
+// Adresse, téléphones, numéro Wave et photos sont encore à remplacer par les vraies infos de Momo Foot.
 window.MOMO_CONFIG = {
   nom: "FC Momo Foot",
   nomCourt: "Momo Foot",
@@ -44,10 +44,10 @@ window.MOMO_CONFIG = {
   attenteAcompteMinutes: 15,
   annulationGratuiteHeures: 24,
 
-  // Clés d'entrée des profils réservés (en production, seules des empreintes seront publiées, comme dans Racine School).
+  // Clés d'entrée du gérant et du personnel, seulement sans Firebase. Avec Firebase, l'admin donne ces rôles depuis #admin.
   cles: { gerant: "DIR-DEMO", personnel: "PERS-DEMO" },
 
-  // Photos du terrain : chemins vers docs/photos/... ; vide = cases de démo.
+  // Photos du terrain : chemins vers docs/photos/... ; vide = cases avec le dessin du terrain.
   photos: [],
 
   // Projet Firebase de Momo Foot (configuration publique : la sécurité vient des règles Firestore). null = sans comptes.

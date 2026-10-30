@@ -1,8 +1,8 @@
 // Momo Foot : vitrine, planning et réservation, matchmaking, profils, espace gérant.
-// Sans FIREBASE_CONFIG, les données vivent sur le téléphone (localStorage) et l'appli démarre avec des données de démo.
+// Avec Firebase, les données sont en ligne et partagées en temps réel ; sans FIREBASE_CONFIG, elles restent sur le téléphone.
 (function () {
   const C = window.MOMO_CONFIG;
-  const KEY = "momo-foot-v1";
+  const KEY = "momo-foot-v3"; // v1 : anciennes données de démo, plus lues
   const JOURS = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"];
   const JOURS_LONG = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
   const MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
@@ -38,85 +38,82 @@
   const qrSvg = (text, cell) => { const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: cell || 6, margin: 2, scalable: true }); };
 
   /* ---------- Données ---------- */
+  // Avec Firebase, tout est en ligne et partagé en temps réel entre les téléphones (Firestore) :
+  //   creneaux/{date_heure_terrain}  réservations, défis et sessions « Je veux jouer » (players : { uid: {name, poste, paid, abonne, at} })
+  //   equipes, resultats, annonces (« il manque des joueurs », joined : { uid: nom }), dispos/{uid}
+  //   réservés au personnel : caisse (reçus), meta/caisse (numéro du prochain reçu), personnel, contacts/{créneau} (téléphone), abonnes/{uid}
+  // Sans Firebase, les mêmes données restent sur ce téléphone. Le mode présentation de l'admin a ses propres données d'exemple.
+  const COLS = ["creneaux", "equipes", "resultats", "annonces", "dispos", "caisse", "meta", "personnel", "contacts", "abonnes"];
+  const empty = () => Object.fromEntries(COLS.map((c) => [c, {}]));
+  const slotId = (k, h, ti) => `${k}_${h}_${ti}`;
+  const sessionBase = (k, h, ti) => ({ date: k, hour: h, terrain: ti, team: "Session joueurs seuls", teamId: "", opponent: "", opponentId: "", type: "session", niveau: "Tous niveaux", status: "confirme", by: "", players: {} });
+  const sessionTotal = (b) => b.players.reduce((s, p) => s + (p.abonne ? C.sessions.prixAbonne : C.sessions.prixJoueur), 0);
+
   function rng(seed) { return () => ((seed = (seed * 9301 + 49297) % 233280) / 233280); }
 
+  // Données d'exemple du mode présentation (jamais enregistrées)
   function seed() {
-    const r = rng(42);
+    const r = rng(42), D = empty();
     const noms = ["Les Lions du Quartier", "Galaxy FC", "Médina Stars", "Team Gorgui", "Les Bleus du Jeudi", "AS Corniche", "Dynamo 221", "Black Panthers"];
     const caps = ["Moussa D.", "Ibrahima S.", "Cheikh N.", "Pape F.", "Alioune B.", "Mamadou K.", "Serigne T.", "Omar G."];
-    const teams = noms.map((name, i) => ({ id: "t" + i, name, captain: caps[i], color: COULEURS[i], elo: 1000 + Math.round(r() * 300), w: 0, d: 0, l: 0, gf: 0, ga: 0, phone: `77 ${pad(10 + i * 7)} ${pad(30 + i)} ${pad(40 + i * 3)}` }));
+    const teams = noms.map((name, i) => ({ id: "t" + i, name, captain: caps[i], color: COULEURS[i], elo: 1000 + Math.round(r() * 300), w: 0, d: 0, l: 0, gf: 0, ga: 0, by: "x" }));
+    teams.forEach((t) => { D.equipes[t.id] = t; });
     const prenoms = ["Abdou", "Bamba", "Lamine", "Khadim", "Saliou", "Assane", "Modou", "Babacar", "Ousmane", "Youssou", "Malick", "Fallou", "Idrissa", "Djibril", "Aliou", "Samba", "Demba", "Habib", "Kader", "Ndiaga", "Souleymane", "Tidiane"];
     const dispos = prenoms.map((p, i) => {
       const slots = [];
       for (let d = 0; d < 7; d++) for (const h of SOIR) if (r() < (d >= 4 ? 0.5 : 0.28) + (h >= 20 && h <= 21 ? 0.25 : 0)) slots.push(`${d}-${h}`);
       return { id: "p" + i, name: `${p} ${String.fromCharCode(65 + (i * 7) % 26)}.`, poste: POSTES[i % 4], slots };
     });
-
-    const bookings = [], results = [], receipts = [];
+    dispos.forEach((p) => { D.dispos[p.id] = { name: p.name, poste: p.poste, slots: p.slots }; });
     let rec = 1;
     const t0 = today();
     for (let off = -14; off <= 6; off++) {
       const k = dkey(addDays(t0, off));
       for (const h of hours()) C.terrains.forEach((_, ti) => {
+        const past = isPast(k, h);
+        if (!past && isAutoSlot(k, h, ti)) return;
         const p = h >= 19 && h <= 22 ? 0.8 : h >= 17 ? 0.55 : 0.18;
         if (r() > p + (isWeekend(k) ? 0.15 : 0)) return;
         const a = teams[Math.floor(r() * teams.length)];
         let b = teams[Math.floor(r() * teams.length)];
         if (b === a) b = null;
-        const past = isPast(k, h);
-        const defi = !past && !b && r() < 0.8;
-        const bk = { id: uid(), date: k, hour: h, terrain: ti, team: a.name, teamId: a.id, phone: a.phone, opponent: b ? b.name : "", type: defi ? "defi" : "prive", niveau: ["Détente", "Moyen", "Costaud"][Math.floor(r() * 3)], price: price(k, h), status: past ? "paye" : r() < 0.25 ? "attente" : "confirme", createdAt: Date.now() - Math.floor(r() * 6e5) };
-        bookings.push(bk);
+        const id = slotId(k, h, ti), defi = !past && !b && r() < 0.8;
+        D.creneaux[id] = { date: k, hour: h, terrain: ti, team: a.name, teamId: a.id, opponent: b ? b.name : "", opponentId: b ? b.id : "", type: defi ? "defi" : "prive", niveau: ["Détente", "Moyen", "Costaud"][Math.floor(r() * 3)], price: price(k, h), status: past ? "paye" : r() < 0.25 ? "attente" : "confirme", by: "x", createdAt: Date.now() - Math.floor(r() * 6e5) };
+        D.contacts[id] = { phone: `77 ${pad(10 + ti * 7)} ${pad(30 + h)} ${pad(40 + off + 14)}`, name: a.captain, by: "x" };
         if (past) {
-          receipts.push({ n: rec++, date: k, hour: h, team: a.name, amount: bk.price, by: r() < 0.5 ? "Wave" : "Espèces" });
+          D.caisse["r" + rec] = { n: rec, date: k, hour: h, team: a.name, amount: price(k, h), by: r() < 0.5 ? "Wave" : "Espèces" }; rec++;
           if (b) {
             const sa = Math.floor(r() * 8), sb = Math.floor(r() * 8);
-            results.push({ id: uid(), date: k, hour: h, a: a.name, b: b.name, sa, sb, motm: dispos[Math.floor(r() * dispos.length)].name });
+            D.resultats[uid()] = { date: k, hour: h, a: a.name, b: b.name, sa, sb, motm: dispos[Math.floor(r() * dispos.length)].name };
             applyResult(teams, a.name, b.name, sa, sb);
           }
         }
       });
     }
-    const needs = bookings.filter((b) => !isPast(b.date, b.hour) && b.type === "prive").slice(0, 5).map((b, i) => ({ id: uid(), bookingId: b.id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: 1 + (i % 3), poste: POSTES[(i + 1) % 4], joined: i % 2 ? [dispos[i].name] : [] }));
-    const staff = [
-      { id: uid(), name: "Ousmane", role: "Ouverture et entretien", shift: "10h - 17h" },
-      { id: uid(), name: "Fatou", role: "Accueil et caisse", shift: "17h - 00h" },
-      { id: uid(), name: "Ibou", role: "Arbitre (week-end)", shift: "Sam. et dim. soir" },
-    ];
-    const st = { v: 2, demo: true, teams, dispos, bookings, results, receipts, needs, staff, nextReceipt: rec, me: { name: "", poste: "Milieu", teamId: "", role: "joueur", slots: [], goals: 0, motm: 0, abonne: false } };
-    // Sessions « Je veux jouer » de la semaine, déjà en partie remplies
-    st.bookings = st.bookings.filter((b) => !(isAutoSlot(b.date, b.hour, b.terrain) && !isPast(b.date, b.hour)));
-    ensureSessions(st);
-    st.bookings.filter((b) => b.type === "session").forEach((b, i) => {
-      const off = Math.round((fromKey(b.date) - t0) / 864e5);
-      const n = Math.max(3, Math.min(C.sessions.maxJoueurs, Math.round(11 - off * 1.2 + r() * 3 - (i % 3 === 0 ? 3 : 0))));
-      const pool = [...dispos].sort(() => r() - 0.5).slice(0, n);
-      b.players = pool.map((p) => ({ name: p.name, poste: p.poste, paid: r() < 0.7, abonne: r() < 0.3 }));
-      b.price = sessionTotal(b);
+    D.meta.caisse = { next: rec };
+    Object.entries(D.creneaux).filter(([, b]) => !isPast(b.date, b.hour) && b.type === "prive").slice(0, 5).forEach(([id, b], i) => {
+      D.annonces[uid()] = { bookingId: id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: 1 + (i % 3), poste: POSTES[(i + 1) % 4], joined: i % 2 ? { [dispos[i].id]: dispos[i].name } : {}, by: "x" };
     });
-    return st;
+    [["Ousmane", "Ouverture et entretien", "10h - 17h"], ["Fatou", "Accueil et caisse", "17h - 00h"], ["Ibou", "Arbitre (week-end)", "Sam. et dim. soir"]].forEach(([name, role, shift]) => { D.personnel[uid()] = { name, role, shift }; });
+    // Sessions « Je veux jouer » de la semaine, déjà en partie remplies
+    for (let off = 0; off < 7; off++) {
+      const k = dkey(addDays(t0, off)), dow = fromKey(k).getDay();
+      C.sessions.auto.filter((a) => a.jours.includes(dow) && !isPast(k, a.heure)).forEach((a, i) => {
+        const n = Math.max(3, Math.min(C.sessions.maxJoueurs, Math.round(11 - off * 1.2 + r() * 3 - (i % 3 === 0 ? 3 : 0))));
+        const players = {};
+        [...dispos].sort(() => r() - 0.5).slice(0, n).forEach((p, j) => { players[p.id] = { name: p.name, poste: p.poste, paid: r() < 0.7, abonne: r() < 0.3, at: j }; });
+        D.creneaux[slotId(k, a.heure, a.terrain)] = { ...sessionBase(k, a.heure, a.terrain), players, createdAt: Date.now() };
+      });
+    }
+    D.abonnes.p3 = { name: dispos[3].name, status: "demande", at: Date.now() - 36e5 };
+    D.abonnes.p5 = { name: dispos[5].name, status: "actif", until: Date.now() + 12 * 864e5 };
+    return D;
   }
 
   function isAutoSlot(k, h, ti) {
     const dow = fromKey(k).getDay();
     return C.sessions.auto.some((a) => a.jours.includes(dow) && a.heure === h && a.terrain === ti);
   }
-  // Ouvre les sessions automatiques des 7 prochains jours sur les créneaux encore libres.
-  function ensureSessions(st) {
-    for (let off = 0; off < 7; off++) {
-      const k = dkey(addDays(today(), off)), dow = fromKey(k).getDay();
-      for (const a of C.sessions.auto) {
-        if (!a.jours.includes(dow) || isPast(k, a.heure) || st.bookings.some((b) => b.date === k && b.hour === a.heure && b.terrain === a.terrain)) continue;
-        st.bookings.push(newSession(k, a.heure, a.terrain));
-      }
-    }
-  }
-  function newSession(k, h, ti, players) {
-    const b = { id: uid(), date: k, hour: h, terrain: ti, team: "Session joueurs seuls", teamId: "", phone: "", opponent: "", type: "session", niveau: "Tous niveaux", status: "confirme", createdAt: Date.now(), players: players || [] };
-    b.price = sessionTotal(b);
-    return b;
-  }
-  const sessionTotal = (b) => b.players.reduce((s, p) => s + (p.abonne ? C.sessions.prixAbonne : C.sessions.prixJoueur), 0);
 
   function applyResult(teams, an, bn, sa, sb) {
     const a = teams.find((t) => t.name === an), b = teams.find((t) => t.name === bn);
@@ -127,25 +124,156 @@
     if (s === 1) { a.w++; b.l++; } else if (s === 0) { a.l++; b.w++; } else { a.d++; b.d++; }
   }
 
-  let S;
-  try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) { S = null; }
-  if (!S || S.v !== 2) S = seed();
-  ensureSessions(S);
-  // En vue d'un client ou en présentation, rien n'est enregistré sur ce téléphone
-  const save = () => { if (mode) return; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* stockage bloqué : la session continue en mémoire */ } };
+  // LIVE : copie des données en ligne ; LOCAL : sans Firebase ; DEMO : présentation
+  let LIVE = empty(), LOCAL = empty(), DEMO = null, ME = { name: "", poste: "Milieu", role: "joueur", equipe: "" };
+  try { const x = JSON.parse(localStorage.getItem(KEY)); if (x && x.v === 3) { LOCAL = { ...empty(), ...x.raw }; ME = { ...ME, ...x.me }; } } catch (e) { /* rien d'enregistré */ }
+  const src = () => (mode && mode.type === "demo" ? DEMO : Compte.enabled ? LIVE : LOCAL);
+  const live = () => !!(Compte.enabled && account && !mode);
+  const myId = () => (mode ? (mode.type === "voir" ? mode.who.uid : "moi") : account ? account.uid : "moi");
+  const saveLocal = () => { if (Compte.enabled || mode) return; try { localStorage.setItem(KEY, JSON.stringify({ v: 3, raw: LOCAL, me: ME })); } catch (e) { /* stockage bloqué : on continue en mémoire */ } };
 
-  // Les créneaux en attente d'acompte se libèrent tout seuls après le délai.
-  function expireHolds() {
-    const lim = Date.now() - C.attenteAcompteMinutes * 60000;
-    const before = S.bookings.length;
-    S.bookings = S.bookings.filter((b) => !(b.status === "attente" && b.mine && b.createdAt < lim));
-    if (S.bookings.length !== before) save();
+  let S = {};
+  // Vue de travail tirée des données : listes triées, sessions automatiques de la semaine, créneaux en attente expirés retirés
+  function derive() {
+    const R = src(), me = myId(), lim = Date.now() - C.attenteAcompteMinutes * 60000;
+    const base = mode ? modeMe : account ? { name: account.name, poste: account.poste || "Milieu", role: account.role, equipe: account.equipe || "" } : ME;
+    const results = Object.entries(R.resultats).map(([id, x]) => ({ id, ...x }));
+    const abo = R.abonnes[me];
+    const bookings = Object.entries(R.creneaux).filter(([, b]) => !(b.status === "attente" && b.createdAt < lim)).map(([id, b]) => {
+      const players = Object.entries(b.players || {}).map(([u, p]) => ({ uid: u, ...p })).sort((x, y) => (x.at || 0) - (y.at || 0));
+      const x = { ...b, id, players, mine: !!b.by && b.by === me, opponentMine: !!b.opBy && b.opBy === me, phone: (R.contacts[id] || {}).phone || "" };
+      if (b.type === "session") x.price = sessionTotal(x);
+      return x;
+    });
+    // Sessions automatiques des 7 prochains jours : affichées sur les créneaux libres, créées en ligne à la première inscription
+    for (let off = 0; off < 7; off++) {
+      const k = dkey(addDays(today(), off)), dow = fromKey(k).getDay();
+      for (const a of C.sessions.auto) {
+        if (!a.jours.includes(dow) || isPast(k, a.heure) || bookings.some((b) => b.date === k && b.hour === a.heure && b.terrain === a.terrain)) continue;
+        bookings.push({ ...sessionBase(k, a.heure, a.terrain), id: slotId(k, a.heure, a.terrain), players: [], price: 0, virtual: true, createdAt: Date.now() });
+      }
+    }
+    S = {
+      bookings, results,
+      teams: Object.entries(R.equipes).map(([id, t]) => ({ id, ...t })),
+      needs: Object.entries(R.annonces).map(([id, n]) => ({ id, ...n, joined: Object.values(n.joined || {}), joinedMe: !!(n.joined || {})[me], mine: !!n.by && n.by === me })).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour))),
+      dispos: Object.entries(R.dispos).filter(([id]) => id !== me).map(([id, p]) => ({ id, ...p, slots: p.slots || [] })),
+      receipts: Object.values(R.caisse).sort((a, b) => a.n - b.n),
+      staff: Object.entries(R.personnel).map(([id, p]) => ({ id, ...p })),
+      abos: Object.entries(R.abonnes).map(([id, a]) => ({ id, ...a })),
+      me: { ...base, teamId: base.equipe || "", slots: (R.dispos[me] || {}).slots || [], abonne: !!(abo && abo.status === "actif" && abo.until > Date.now()), aboDemande: !!(abo && abo.status === "demande"),
+        motm: base.name ? results.filter((x) => x.motm === base.name).length : 0 },
+    };
+    // Les créneaux en attente d'acompte se libèrent tout seuls après le délai (les règles autorisent tout compte à les effacer)
+    Object.entries(R.creneaux).filter(([id, b]) => b.status === "attente" && b.createdAt < lim && !expiring.has(id)).forEach(([id]) => {
+      expiring.add(id);
+      if (live()) Compte.db().collection("creneaux").doc(id).delete().catch(() => {});
+      else if (!Compte.enabled || (mode && mode.type === "demo")) delete R.creneaux[id];
+    });
+  }
+  const expiring = new Set();
+
+  // Écritures : en ligne avec Firebase, sinon dans les données locales (ou de présentation)
+  const NOW = { now: 1 }, DEL = { del: 1 };
+  const fsv = (v) => (v === NOW ? firebase.firestore.FieldValue.serverTimestamp() : v === DEL ? firebase.firestore.FieldValue.delete() : v);
+  const lv = (v) => (v === NOW ? Date.now() : v instanceof Date ? v.getTime() : v);
+  const fsData = (d) => Object.fromEntries(Object.entries(d).map(([k, v]) => [k, fsv(v)]));
+  const lData = (d) => JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(d).map(([k, v]) => [k, lv(v)]))));
+  function changed() { derive(); saveLocal(); later(); }
+  const col = (c) => Compte.db().collection(c);
+  // Crée un document neuf, ou le remplace en entier (dispos, abonnement)
+  function put(c, id, data) {
+    id = id || uid() + uid();
+    if (live()) return col(c).doc(id).set(fsData(data)).then(() => id);
+    src()[c][id] = lData(data); changed(); return Promise.resolve(id);
+  }
+  // Met à jour quelques champs ; "players.<uid>" vise une seule entrée, DEL l'efface
+  function patch(c, id, data) {
+    if (live()) return col(c).doc(id).update(fsData(data));
+    const d = src()[c][id] || (src()[c][id] = {});
+    Object.entries(data).forEach(([path, v]) => { const ks = path.split("."), last = ks.pop(); let o = d; ks.forEach((k) => { o = o[k] = o[k] || {}; }); if (v === DEL) delete o[last]; else o[last] = lv(v); });
+    changed(); return Promise.resolve();
+  }
+  function drop(c, id) {
+    if (live()) return col(c).doc(id).delete();
+    delete src()[c][id]; changed(); return Promise.resolve();
+  }
+  // Prend un créneau : refusé s'il vient d'être pris sur un autre téléphone
+  const PRIS = () => Object.assign(new Error("Créneau déjà pris"), { code: "pris" });
+  function claim(id, data) {
+    if (live()) { const ref = col("creneaux").doc(id); return Compte.db().runTransaction(async (tx) => { if ((await tx.get(ref)).exists) throw PRIS(); tx.set(ref, fsData(data)); }); }
+    if (src().creneaux[id]) return Promise.reject(PRIS());
+    return put("creneaux", id, data);
+  }
+  // Encaissement : numéro de reçu suivi, reçu et créneau payé, en une seule fois
+  function cashOp(b, by) {
+    const rcpt = { date: b.date, hour: b.hour, team: b.team, amount: b.price, by };
+    if (live()) {
+      const meta = col("meta").doc("caisse"), out = col("caisse").doc();
+      let n = 1;
+      return Compte.db().runTransaction(async (tx) => {
+        const m = await tx.get(meta); n = (m.exists && m.data().next) || 1;
+        tx.set(meta, { next: n + 1 }); tx.set(out, { ...rcpt, n, at: fsv(NOW), staff: account.uid });
+        tx.update(col("creneaux").doc(b.id), { status: "paye" });
+      }).then(() => n);
+    }
+    const R = src(), n = (R.meta.caisse && R.meta.caisse.next) || 1;
+    R.meta.caisse = { next: n + 1 }; R.caisse[uid()] = { ...rcpt, n, at: Date.now() }; R.creneaux[b.id].status = "paye";
+    changed(); return Promise.resolve(n);
+  }
+  // Refus d'une écriture : message clair, et l'erreur part dans le journal de l'admin
+  const fail = (what) => (e) => { toast(e && e.code === "pris" ? "Ce créneau vient d'être pris. Choisissez-en un autre." : "Enregistrement refusé, réessayez"); logRefus(`${what} refusé : ${(e && (e.code || e.message)) || e}`); render(); };
+
+  // Lecture en temps réel : chaque changement fait sur un téléphone arrive sur les autres
+  let unsubs = [];
+  const plain = (d) => { Object.keys(d).forEach((k) => { if (d[k] && d[k].toMillis) d[k] = d[k].toMillis(); }); return d; };
+  function listen() {
+    unsubs.forEach((f) => f()); unsubs = [];
+    LIVE = empty();
+    if (!Compte.enabled || !Compte.ready) return;
+    const since = dkey(addDays(today(), -14));
+    const sub = (c, q) => unsubs.push(q.onSnapshot((s) => {
+      LIVE[c] = Object.fromEntries(s.docs.map((d) => [d.id, plain(d.data({ serverTimestamps: "estimate" }))])); changed();
+    }, (e) => { console.warn(c, e.code); Compte.logError("refus", `Lecture ${c} refusée : ${e.code}`); }));
+    const one = (c, id) => unsubs.push(col(c).doc(id).onSnapshot((d) => { LIVE[c] = d.exists ? { [id]: plain(d.data({ serverTimestamps: "estimate" })) } : {}; changed(); }, () => {}));
+    sub("creneaux", col("creneaux").where("date", ">=", since));
+    sub("equipes", col("equipes"));
+    sub("resultats", col("resultats").where("date", ">=", dkey(addDays(today(), -30))));
+    sub("annonces", col("annonces").where("date", ">=", dkey(today())));
+    if (!account) return;
+    sub("dispos", col("dispos"));
+    // L'admin lit aussi les données du personnel, pour la vue « Voir » d'un gérant
+    if (account.active && (["gerant", "personnel"].includes(account.role) || Compte.isAdmin())) {
+      sub("caisse", col("caisse").where("date", ">=", since));
+      sub("personnel", col("personnel"));
+      sub("contacts", col("contacts"));
+      sub("abonnes", col("abonnes"));
+    } else one("abonnes", account.uid);
+  }
+  // Un nouveau rendu groupé, sans effacer ce que l'utilisateur est en train de taper
+  let laterT = null;
+  function later() {
+    clearTimeout(laterT);
+    laterT = setTimeout(() => { const a = document.activeElement; if (a && a.closest && a.closest("#app") && /INPUT|SELECT|TEXTAREA/.test(a.tagName)) return later(); render(); }, 120);
   }
 
   const myTeam = () => S.teams.find((t) => t.id === S.me.teamId);
   const isStaff = () => S.me.role === "gerant" || S.me.role === "personnel";
   const level = (elo) => (elo >= 1200 ? "Costaud" : elo >= 1080 ? "Moyen" : "Détente");
   const standings = () => [...S.teams].sort((a, b) => b.elo - a.elo);
+  // Change le profil : en ligne pour un compte, sinon sur ce téléphone
+  function setMe(p) {
+    if (mode) { Object.assign(modeMe, p); changed(); return Promise.resolve(); }
+    if (account) { Object.assign(account, p); changed(); return Compte.saveProfile(account); }
+    Object.assign(ME, p); changed(); return Promise.resolve();
+  }
+  // Nouvelle équipe, ou celle qui porte déjà ce nom
+  async function teamFor(name) {
+    const t = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (t) return t;
+    const d = { name, captain: S.me.name || "Capitaine", color: COULEURS[S.teams.length % COULEURS.length], elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, by: myId() };
+    return { id: await put("equipes", null, d), ...d };
+  }
 
   /* ---------- Interface commune ---------- */
   const ICONS = {
@@ -289,7 +417,6 @@
   const findBk = (k, h, ti) => S.bookings.find((b) => b.date === k && b.hour === h && b.terrain === ti);
 
   function viewPlanning() {
-    expireHolds();
     const days = [...Array(7)].map((_, i) => addDays(today(), i));
     const mine = S.bookings.filter((b) => b.mine && !isPast(b.date, b.hour)).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
     return `<main class="wrap">
@@ -315,7 +442,7 @@
     if (isPast(k, h)) return `<div class="slot taken past"><b>${b ? esc(b.team) : "-"}</b><span>terminé</span></div>`;
     if (!b) return `<button class="slot free" data-book="${k}|${h}|${ti}"><b class="num">${money(price(k, h))}</b><span>Libre</span></button>`;
     const mine = b.mine ? " mine" : "";
-    if (b.type === "session") return `<button class="slot sess${b.players.some((p) => p.name === S.me.name) ? " mine" : ""}" data-sess="${b.id}"><b>Je veux jouer</b><span class="num">${b.players.length}/${C.sessions.minJoueurs} inscrits</span></button>`;
+    if (b.type === "session") return `<button class="slot sess${b.players.some((p) => p.uid === myId()) ? " mine" : ""}" data-sess="${b.id}"><b>Je veux jouer</b><span class="num">${b.players.length}/${C.sessions.minJoueurs} inscrits</span></button>`;
     if (b.type === "defi" && !b.opponent) return `<button class="slot defi${mine}" data-defi="${b.id}"><b>${esc(b.team)}</b><span>cherche adversaire</span></button>`;
     if (b.status === "attente") return `<div class="slot hold${mine}"><b>${esc(b.team)}</b><span>attente acompte</span></div>`;
     return `<div class="slot taken${mine}"><b>${esc(b.team)}</b><span>${b.opponent ? "vs " + esc(b.opponent) : "match privé"}</span></div>`;
@@ -342,29 +469,28 @@
           <label class="choice"><input type="radio" name="bType" value="defi" ${presetDefi ? "checked" : ""}><span>On cherche un adversaire</span></label>
         </div></div>
         <div class="field"><span class="label">Niveau de l'équipe</span><div class="choices">${["Détente", "Moyen", "Costaud"].map((n, i) => `<label class="choice"><input type="radio" name="bLvl" value="${n}" ${(t ? level(t.elo) : "Moyen") === n ? "checked" : ""}><span>${n}</span></label>`).join("")}</div></div>
-        <label class="choice"><input type="checkbox" id="bRec"><span>Répéter chaque ${JOURS_LONG[fromKey(k).getDay()]} à ${hh(h)}</span></label>
         <button class="btn btn-bib btn-block" type="submit">Bloquer le créneau</button>
-        <p class="small muted">Le créneau est gardé ${C.attenteAcompteMinutes} min le temps d'envoyer l'acompte de ${money(C.acompte)} par Wave.</p>
+        <p class="small muted">Le créneau est gardé ${C.attenteAcompteMinutes} min le temps d'envoyer l'acompte de ${money(C.acompte)} par Wave. Pour un créneau chaque semaine, appelez le complexe.</p>
       </form>`, (el) => {
       el.querySelector("#bookForm").addEventListener("submit", (e) => {
         e.preventDefault();
         if (findBk(k, h, ti)) { toast("Ce créneau vient d'être pris. Choisissez-en un autre."); logRefus("Réservation refusée : créneau déjà pris"); closeSheet(); render(); return; }
         const name = el.querySelector("#bTeam").value.trim(), phone = el.querySelector("#bPhone").value.trim();
-        let team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
-        if (!team) { team = { id: "t" + uid(), name, captain: S.me.name || "Capitaine", color: COULEURS[S.teams.length % COULEURS.length], elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, phone }; S.teams.push(team); }
-        if (!S.me.teamId) S.me.teamId = team.id;
-        const rec = el.querySelector("#bRec").checked;
-        const base = { team: team.name, teamId: team.id, phone, opponent: "", type: el.querySelector("[name=bType]:checked").value, niveau: el.querySelector("[name=bLvl]:checked").value, status: "attente", mine: true, recurrent: rec, createdAt: Date.now() };
-        const bk = { id: uid(), date: k, hour: h, terrain: ti, price: price(k, h), ...base };
-        S.bookings.push(bk); act();
-        if (rec) for (let w = 1; w <= 3; w++) { const kk = dkey(addDays(fromKey(k), 7 * w)); if (!findBk(kk, h, ti)) S.bookings.push({ ...base, id: uid(), date: kk, hour: h, terrain: ti, price: price(kk, h), status: "confirme" }); }
-        save(); paySheet(bk.id); render();
+        const type = el.querySelector("[name=bType]:checked").value, niveau = el.querySelector("[name=bLvl]:checked").value, id = slotId(k, h, ti);
+        const btn = el.querySelector("[type=submit]"); btn.disabled = true;
+        (async () => {
+          const team = await teamFor(name);
+          if (!S.me.teamId) setMe({ equipe: team.id }).catch(() => {});
+          const bk = { date: k, hour: h, terrain: ti, price: price(k, h), team: team.name, teamId: team.id, opponent: "", opponentId: "", type, niveau, status: isStaff() ? "confirme" : "attente", by: myId(), createdAt: NOW };
+          await claim(id, bk);
+          if (phone) put("contacts", id, { phone, name: S.me.name, by: myId() }).catch(fail("Téléphone de la réservation"));
+          act(); paySheet({ ...bk, id, createdAt: Date.now() }); render();
+        })().catch((e) => { closeSheet(); fail("Réservation")(e); });
       });
     });
   }
 
-  function paySheet(id) {
-    const b = S.bookings.find((x) => x.id === id);
+  function paySheet(b) {
     if (!b) return;
     const ref = "MF-" + b.id.slice(0, 4).toUpperCase();
     const msg = `Bonjour ${C.nomCourt}, j'ai réservé ${C.terrains[b.terrain]} le ${dayLabel(b.date).toLowerCase()} à ${hh(b.hour)} pour ${b.team}. Acompte de ${money(C.acompte)} envoyé par Wave, référence ${ref}.`;
@@ -376,10 +502,7 @@
         <p class="small">Référence à mettre dans le message Wave : <b>${ref}</b>. Reste à payer sur place : <b class="num">${money(b.price - C.acompte)}</b>.</p>
       </div>
       <a class="btn btn-turf btn-block" href="${waLink(msg, C.whatsapp)}" target="_blank" rel="noopener">Prévenir le complexe sur WhatsApp</a>
-      <button class="btn btn-ghost btn-block" id="payDone">J'ai payé (démo : confirme tout de suite)</button>
-      <p class="small muted">En production, le gérant confirme le paiement depuis son espace et vous recevez la confirmation. La veille du match, un rappel part sur WhatsApp.</p>`, (el) => {
-      el.querySelector("#payDone").addEventListener("click", () => { b.status = "confirme"; save(); closeSheet(); render(); toast("Réservation confirmée. À bientôt sur le terrain !"); });
-    });
+      <p class="small muted">Dès que le gérant voit votre acompte, la réservation passe en « Confirmé » dans Mes réservations.</p>`);
   }
 
   function cancelSheet(id) {
@@ -389,7 +512,14 @@
     sheet(`${head("Annuler la réservation ?", `${dayLabel(b.date)} · ${hh(b.hour)} · ${esc(b.team)}`)}
       <p>${free ? "L'annulation est gratuite : l'acompte vous sera rendu." : `Le match est dans moins de ${C.annulationGratuiteHeures} h : l'acompte de ${money(C.acompte)} est gardé par le complexe.`}</p>
       <div class="row"><button class="btn btn-ghost grow" data-close>Garder</button><button class="btn btn-bib grow" id="doCancel">Annuler le créneau</button></div>`, (el) => {
-      el.querySelector("#doCancel").addEventListener("click", () => { S.bookings = S.bookings.filter((x) => x.id !== id); S.needs = S.needs.filter((n) => n.bookingId !== id); save(); closeSheet(); render(); toast("Réservation annulée, le créneau est libéré"); });
+      el.querySelector("#doCancel").addEventListener("click", () => {
+        closeSheet();
+        drop("creneaux", id).then(() => {
+          toast("Réservation annulée, le créneau est libéré");
+          if (b.phone) drop("contacts", id).catch(() => {});
+          S.needs.filter((n) => n.bookingId === id && n.mine).forEach((n) => drop("annonces", n.id).catch(() => {}));
+        }, fail("Annulation"));
+      });
     });
   }
 
@@ -418,11 +548,13 @@
         e.preventDefault();
         const name = el.querySelector("#aTeam").value.trim();
         if (name.toLowerCase() === b.team.toLowerCase()) { toast("Choisissez une autre équipe que celle qui lance le défi"); return; }
-        let team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
-        if (!team) { team = { id: "t" + uid(), name, captain: S.me.name || "Capitaine", color: COULEURS[S.teams.length % COULEURS.length], elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, phone: "" }; S.teams.push(team); }
-        if (!S.me.teamId) S.me.teamId = team.id;
-        b.opponent = team.name; b.opponentMine = true; act(); save(); closeSheet(); render();
-        toast(`Match calé : ${b.team} vs ${team.name}`);
+        closeSheet();
+        (async () => {
+          const team = await teamFor(name);
+          if (!S.me.teamId) setMe({ equipe: team.id }).catch(() => {});
+          await patch("creneaux", b.id, { opponent: team.name, opponentId: team.id, opBy: myId() });
+          act(); toast(`Match calé : ${b.team} vs ${team.name}`);
+        })().catch(fail("Défi"));
       });
     });
   }
@@ -450,7 +582,7 @@
   }
 
   function needCard(n) {
-    const left = n.missing - n.joined.length, me = S.me.name && n.joined.includes(S.me.name);
+    const left = n.missing - n.joined.length, me = n.joinedMe;
     return `<div class="card">
       <div class="row"><span class="when">${dayLabel(n.date)} · ${hh(n.hour)}</span>${left > 0 ? `<span class="chip chip-bib" style="margin-left:auto">Il manque ${left}</span>` : '<span class="chip chip-ok" style="margin-left:auto">Complet</span>'}</div>
       <p><b>${esc(n.team)}</b> cherche ${n.missing > 1 ? `${n.missing} joueurs` : "un joueur"}, de préférence ${esc(n.poste.toLowerCase())}.</p>
@@ -473,8 +605,9 @@
       el.querySelector("#needForm").addEventListener("submit", (e) => {
         e.preventDefault();
         const b = S.bookings.find((x) => x.id === el.querySelector("#nBk").value);
-        act(); S.needs.unshift({ id: uid(), bookingId: b.id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: +el.querySelector("#nMiss").value, poste: el.querySelector("[name=nPoste]:checked").value, joined: [], mine: true });
-        save(); closeSheet(); seg = "joueurs"; render(); toast("Annonce publiée");
+        closeSheet(); seg = "joueurs";
+        put("annonces", null, { bookingId: b.id, team: b.team, date: b.date, hour: b.hour, terrain: b.terrain, missing: +el.querySelector("#nMiss").value, poste: el.querySelector("[name=nPoste]:checked").value, joined: {}, by: myId(), at: NOW })
+          .then(() => { act(); toast("Annonce publiée"); }, fail("Annonce"));
       });
     });
   }
@@ -515,19 +648,23 @@
       ${ti >= 0 ? `<p class="small muted">${esc(C.terrains[ti])} est libre à cette heure. Chacun paie ${money(C.sessions.prixJoueur)} (${money(C.sessions.prixAbonne)} pour les abonnés).</p><button class="btn btn-bib btn-block" id="fcBook">Ouvrir la session et prévenir les joueurs</button>` : '<p class="small muted">Tous les terrains sont pris à cette heure. Essayez un autre créneau.</p>'}`, (el) => {
       const btn = el.querySelector("#fcBook");
       btn && btn.addEventListener("click", () => {
-        S.bookings.push(newSession(k, h, ti, pool.map((p) => ({ name: p.name, poste: p.poste, paid: false, abonne: p.me ? S.me.abonne : false }))));
-        save(); closeSheet(); seg = "jouer"; render(); toast("Session ouverte. Les joueurs reçoivent le lien WhatsApp pour payer leur place.");
+        // Chacun s'inscrit lui-même : on ouvre la session avec vous dedans si vous êtes dispo
+        const me = pool.find((p) => p.me), players = me ? { [myId()]: entry() } : {};
+        closeSheet(); seg = "jouer";
+        claim(slotId(k, h, ti), { ...sessionBase(k, h, ti), players, createdAt: NOW })
+          .then(() => { act(); toast("Session ouverte. Partagez-la sur WhatsApp pour que les autres s'inscrivent."); }, fail("Session"));
       });
     });
   }
 
   /* ---------- Je veux jouer ---------- */
   const openSessions = () => S.bookings.filter((b) => b.type === "session" && !isPast(b.date, b.hour)).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
+  const entry = () => ({ name: S.me.name, poste: S.me.poste, paid: false, abonne: S.me.abonne, at: Date.now() });
   const myPrice = () => (S.me.abonne ? C.sessions.prixAbonne : C.sessions.prixJoueur);
 
   function sessionCard(b) {
     const n = b.players.length, min = C.sessions.minJoueurs, max = C.sessions.maxJoueurs;
-    const me = S.me.name && b.players.some((p) => p.name === S.me.name);
+    const me = b.players.some((p) => p.uid === myId());
     const chip = n >= max ? '<span class="chip chip-n">Complet</span>' : n >= min ? '<span class="chip chip-ok">On joue !</span>' : `<span class="chip chip-bib">Il manque ${min - n}</span>`;
     return `<div class="card">
       <div class="row"><span class="when">${dayLabel(b.date)} · ${hh(b.hour)}</span>${chip}</div>
@@ -554,7 +691,7 @@
   function joinSheet(id) {
     const b = S.bookings.find((x) => x.id === id);
     if (!S.me.name) { toast("Créez d'abord votre profil, ça prend 20 secondes"); location.hash = "profil"; return; }
-    const me = b.players.find((p) => p.name === S.me.name);
+    const me = b.players.find((p) => p.uid === myId()), staff = isStaff();
     const order = { Gardien: 0, "Défenseur": 1, Milieu: 2, Attaquant: 3 };
     const byPoste = POSTES.map((p) => `${p} : ${b.players.filter((x) => x.poste === p).length}`).join(" · ");
     const ref = "MS-" + b.id.slice(0, 4).toUpperCase();
@@ -562,17 +699,20 @@
     sheet(`${head("Session joueurs seuls", `${dayLabel(b.date)} · ${hh(b.hour)} · ${esc(C.terrains[b.terrain])}`)}
       <div class="meter"><i style="width:${Math.min(100, (b.players.length / C.sessions.minJoueurs) * 100)}%"></i></div>
       <p class="small"><b class="num">${b.players.length}/${C.sessions.minJoueurs}</b> inscrits. ${byPoste}</p>
-      <div class="list small">${[...b.players].sort((x, y) => order[x.poste] - order[y.poste]).map((p) => `<div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><span class="grow">${esc(p.name)}${p.name === S.me.name ? " (vous)" : ""}</span><span class="muted">${esc(p.poste)}</span>${p.paid ? '<span class="chip chip-ok">payé</span>' : '<span class="chip chip-warn">à payer</span>'}</div>`).join("")}</div>
+      <div class="list small">${[...b.players].sort((x, y) => order[x.poste] - order[y.poste]).map((p) => `<div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><span class="grow">${esc(p.name)}${p.uid === myId() ? " (vous)" : ""}${p.abonne ? ' <span class="chip chip-n">abonné</span>' : ""}</span><span class="muted">${esc(p.poste)}</span>${p.paid ? '<span class="chip chip-ok">payé</span>' : staff ? `<button class="btn btn-turf btn-sm" data-ppaid="${esc(p.uid)}">Encaissé</button>` : '<span class="chip chip-warn">à payer</span>'}</div>`).join("")}</div>
       ${me ? `${me.paid ? "" : `<div class="pay"><span class="label">Votre place</span><span class="big num">${money(myPrice())}</span><div class="copybox"><code>${esc(C.wave)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(C.wave)}" data-done="Numéro Wave copié">Copier</button></div><p class="small">Référence Wave : <b>${ref}</b></p></div>
         <a class="btn btn-turf btn-block" href="${waLink(msg, C.whatsapp)}" target="_blank" rel="noopener">Prévenir le complexe sur WhatsApp</a>
-        <button class="btn btn-ghost btn-block" id="jPaid">J'ai payé (démo)</button>`}
+        <p class="small muted">Le complexe coche « payé » dès qu'il voit votre paiement.</p>`}
         <button class="btn btn-ghost btn-block" id="jLeave">Me désinscrire</button>`
-      : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
+      : staff ? "" : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
         <p class="small muted">Payez votre place par Wave pour la garder. Si la session n'atteint pas ${C.sessions.minJoueurs} joueurs, vous êtes remboursé.</p>`}`, (el) => {
-      const j = el.querySelector("#jJoin"), l = el.querySelector("#jLeave"), pd = el.querySelector("#jPaid");
-      j && j.addEventListener("click", () => { act(); b.players.push({ name: S.me.name, poste: S.me.poste, paid: false, abonne: S.me.abonne }); b.price = sessionTotal(b); save(); render(); joinSheet(id); toast(b.players.length >= C.sessions.minJoueurs ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${C.sessions.minJoueurs - b.players.length} joueurs`); });
-      l && l.addEventListener("click", () => { b.players = b.players.filter((p) => p.name !== S.me.name); b.price = sessionTotal(b); save(); closeSheet(); render(); toast("Désinscrit"); });
-      pd && pd.addEventListener("click", () => { me.paid = true; save(); closeSheet(); render(); toast("Place payée, à bientôt sur le terrain"); });
+      const j = el.querySelector("#jJoin"), l = el.querySelector("#jLeave"), n = b.players.length + 1;
+      // Première inscription à une session automatique : on la crée en ligne ; sinon on ajoute seulement sa ligne
+      const join = () => (b.virtual ? claim(b.id, { ...sessionBase(b.date, b.hour, b.terrain), players: { [myId()]: entry() }, createdAt: NOW }).catch((e) => { if (e.code !== "pris") throw e; return patch("creneaux", b.id, { ["players." + myId()]: entry() }); })
+        : patch("creneaux", b.id, { ["players." + myId()]: entry() }));
+      j && j.addEventListener("click", () => { closeSheet(); join().then(() => { act(); toast(n >= C.sessions.minJoueurs ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${C.sessions.minJoueurs - n} joueurs`); }, fail("Inscription à la session")); });
+      l && l.addEventListener("click", () => { closeSheet(); patch("creneaux", b.id, { ["players." + myId()]: DEL }).then(() => toast("Désinscrit"), fail("Désinscription")); });
+      el.querySelectorAll("[data-ppaid]").forEach((x) => x.addEventListener("click", () => { x.disabled = true; patch("creneaux", b.id, { [`players.${x.dataset.ppaid}.paid`]: true }).then(() => { x.outerHTML = '<span class="chip chip-ok">payé</span>'; }, fail("Place encaissée")); }));
     });
   }
 
@@ -580,9 +720,9 @@
     const save1 = (C.sessions.prixJoueur - C.sessions.prixAbonne);
     const breakEven = Math.ceil(C.sessions.abonnementMois / save1);
     return `<div class="card">
-      <div class="row"><h3 class="grow">Abonné ${esc(C.nomCourt)}</h3>${S.me.abonne ? '<span class="chip chip-ok">Actif</span>' : `<span class="chip chip-n num">${money(C.sessions.abonnementMois)} / mois</span>`}</div>
+      <div class="row"><h3 class="grow">Abonné ${esc(C.nomCourt)}</h3>${S.me.abonne ? '<span class="chip chip-ok">Actif</span>' : S.me.aboDemande ? '<span class="chip chip-warn">Demande envoyée</span>' : `<span class="chip chip-n num">${money(C.sessions.abonnementMois)} / mois</span>`}</div>
       <p class="small">Chaque session à ${money(C.sessions.prixAbonne)} au lieu de ${money(C.sessions.prixJoueur)}, et vous êtes prévenu en premier quand une session s'ouvre sur vos dispos. Rentabilisé dès ${breakEven} sessions par mois.</p>
-      ${S.me.abonne ? "" : '<button class="btn btn-turf btn-block" data-sub>S\'abonner</button>'}
+      ${S.me.abonne || S.me.aboDemande ? "" : '<button class="btn btn-turf btn-block" data-sub>S\'abonner</button>'}
     </div>`;
   }
 
@@ -590,8 +730,10 @@
     if (!S.me.name) { toast("Créez d'abord votre profil"); location.hash = "profil"; return; }
     sheet(`${head("S'abonner", `${money(C.sessions.abonnementMois)} par mois`)}
       <div class="pay"><span class="label">Abonnement du mois</span><span class="big num">${money(C.sessions.abonnementMois)}</span><div class="copybox"><code>${esc(C.wave)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(C.wave)}" data-done="Numéro Wave copié">Copier</button></div></div>
-      <button class="btn btn-bib btn-block" id="subOk">J'ai payé par Wave (démo : active tout de suite)</button>`, (el) => {
-      el.querySelector("#subOk").addEventListener("click", () => { S.me.abonne = true; save(); closeSheet(); render(); toast("Abonnement activé"); });
+      <a class="btn btn-turf btn-block" href="${waLink(`Bonjour ${C.nomCourt}, je m'abonne pour le mois : ${money(C.sessions.abonnementMois)} envoyés par Wave. ${S.me.name}`, C.whatsapp)}" target="_blank" rel="noopener">Prévenir le complexe sur WhatsApp</a>
+      <button class="btn btn-bib btn-block" id="subOk">J'ai payé par Wave</button>
+      <p class="small muted">Le gérant active votre abonnement dès qu'il voit le paiement, pour 30 jours.</p>`, (el) => {
+      el.querySelector("#subOk").addEventListener("click", () => { closeSheet(); put("abonnes", myId(), { name: S.me.name, status: "demande", at: NOW }).then(() => toast("Demande envoyée au complexe"), fail("Demande d'abonnement")); });
     });
   }
 
@@ -609,7 +751,7 @@
         const k = el.querySelector("#oDay").value, h = +el.querySelector("#oHour").value, ti = +el.querySelector("#oTer").value;
         if (findBk(k, h, ti)) { toast("Ce créneau est déjà pris"); return; }
         if (isPast(k, h)) { toast("Cette heure est déjà passée"); return; }
-        S.bookings.push(newSession(k, h, ti)); save(); closeSheet(); render(); toast("Session ouverte");
+        closeSheet(); claim(slotId(k, h, ti), { ...sessionBase(k, h, ti), createdAt: NOW }).then(() => toast("Session ouverte"), fail("Session"));
       });
     });
   }
@@ -646,7 +788,7 @@
       <div class="player">
         <svg class="jersey" viewBox="0 0 84 84" aria-hidden="true"><path d="M26 8h32l18 12-8 14-8-4v46H24V30l-8 4-8-14z" fill="${t ? t.color : "#E9601A"}" stroke="#F4FFF8" stroke-width="2"/><text x="42" y="58" text-anchor="middle" font-family="Barlow Condensed, Arial Narrow, sans-serif" font-weight="800" font-size="26" fill="#F4FFF8">${esc(initials(S.me.name))}</text></svg>
         <div><span class="label" style="color:inherit;opacity:.8">${roleName} · ${esc(S.me.poste)}</span><h2>${esc(S.me.name)}</h2><p>${t ? esc(t.name) : "Sans équipe"}</p></div>
-        <div class="stats"><div><b class="num">${mt}</b><span>matchs</span></div><div><b class="num">${S.me.goals}</b><span>buts</span></div><div><b class="num">${S.me.motm}</b><span>homme du match</span></div><div><b class="num">${S.me.slots.length}</b><span>dispos</span></div></div>
+        <div class="stats"><div><b class="num">${mt}</b><span>matchs</span></div><div><b class="num">${S.me.motm}</b><span>homme du match</span></div><div><b class="num">${S.me.slots.length}</b><span>dispos</span></div></div>
       </div>
       ${t ? `<section><div class="sec-head"><h2>Mon équipe</h2></div><div class="card">
         <div class="row"><span class="dot" style="background:${t.color};width:16px;height:16px"></span><h3 class="grow">${esc(t.name)}</h3><span class="chip chip-n">Niveau ${level(t.elo)}</span></div>
@@ -658,10 +800,9 @@
       <section><h2>Réglages</h2>
         <div class="card">
           <button class="btn btn-ghost btn-block" id="editProfile">Modifier mon profil</button>
-          <button class="btn btn-ghost btn-block" id="resetDemo">Remettre les données de démo</button>
           ${account ? `<span class="label">Mon identifiant</span><div class="copybox"><code>${esc(account.uid)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(account.uid)}" data-done="Identifiant copié">Copier</button></div>
           <button class="btn btn-ghost btn-block" id="signOut">Me déconnecter</button>` : ""}
-          <p class="small muted">${account ? "Votre compte est enregistré en ligne. Le planning et les sessions restent pour l'instant sur ce téléphone, avec des données de démo." : "Version démo : les données restent sur ce téléphone."}</p>
+          <p class="small muted">${account ? "Votre compte, vos réservations et vos inscriptions sont en ligne : vous les retrouvez sur tous vos téléphones." : "Les données restent sur ce téléphone."}</p>
         </div>
       </section>
     </main>`;
@@ -688,7 +829,7 @@
 
   function onboarding() {
     if (Compte.enabled && !account) return signInView();
-    const m = S.me;
+    const m = S.me, staffRole = m.role === "gerant" || m.role === "personnel";
     return `<main class="wrap"><section>
       <h2>Mon profil</h2>
       <p class="muted">Créez votre profil pour réserver, rejoindre des matchs et suivre vos stats.</p>
@@ -696,8 +837,9 @@
         <div class="field"><label for="mName">Prénom et nom</label><input class="input" id="mName" required value="${esc(m.name)}" placeholder="Ex. Moussa Diop"></div>
         <div class="field"><span class="label">Poste</span><div class="choices">${POSTES.map((p) => `<label class="choice"><input type="radio" name="mPoste" value="${p}" ${m.poste === p ? "checked" : ""}><span>${p}</span></label>`).join("")}</div></div>
         <div class="field"><label for="mTeam">Équipe</label><select class="input" id="mTeam"><option value="">Pas encore d'équipe</option>${S.teams.map((t) => `<option value="${t.id}" ${t.id === m.teamId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
-        <div class="field"><span class="label">Je suis</span><div class="choices">${[["joueur", "Joueur"], ["capitaine", "Capitaine"], ["personnel", "Personnel"], ["gerant", "Gérant"]].map(([k, l]) => `<label class="choice"><input type="radio" name="mRole" value="${k}" ${m.role === k ? "checked" : ""}><span>${l}</span></label>`).join("")}</div></div>
-        <div class="field" id="keyField" hidden><label for="mKey">Clé d'entrée</label><input class="input" id="mKey" autocomplete="off" placeholder="Donnée par le complexe"><span class="small muted">Démo : ${esc(C.cles.gerant)} pour le gérant, ${esc(C.cles.personnel)} pour le personnel.</span></div>
+        ${staffRole && Compte.enabled ? `<input type="radio" name="mRole" value="${m.role}" checked hidden><p class="small"><span class="chip chip-ok">${ROLE_NAMES[m.role]}</span> rôle donné par l'administrateur de l'appli</p>` : `<div class="field"><span class="label">Je suis</span><div class="choices">${(Compte.enabled ? [["joueur", "Joueur"], ["capitaine", "Capitaine"]] : Object.entries(ROLE_NAMES)).map(([k, l]) => `<label class="choice"><input type="radio" name="mRole" value="${k}" ${m.role === k ? "checked" : ""}><span>${l}</span></label>`).join("")}</div>
+          ${Compte.enabled ? '<span class="small muted">Gérant ou personnel du complexe : créez votre compte, puis demandez votre rôle à l\'administrateur de l\'appli.</span>' : ""}</div>`}
+        <div class="field" id="keyField" hidden><label for="mKey">Clé d'entrée</label><input class="input" id="mKey" autocomplete="off" placeholder="Donnée par le complexe"></div>
         ${account ? `<div class="row"><div class="field grow"><label for="mTel">Téléphone</label><input class="input" id="mTel" inputmode="tel" value="${esc(account.tel)}" placeholder="77 123 45 67"></div>
         <div class="field grow"><label for="mQuartier">Quartier</label><input class="input" id="mQuartier" value="${esc(account.quartier)}"></div></div>` : ""}
         <button class="btn btn-bib btn-block" type="submit">Enregistrer</button>
@@ -707,14 +849,14 @@
 
   /* ---------- Espace gérant ---------- */
   function viewGerant() {
-    if (!isStaff()) return `<main class="wrap"><section><h2>Espace gérant</h2><div class="empty-state">Réservé au gérant et au personnel. Choisissez ce profil dans l'onglet Profil avec votre clé d'entrée.</div><a class="btn btn-turf btn-block" href="#profil">Aller au profil</a></section></main>`;
-    expireHolds();
+    if (!isStaff()) return `<main class="wrap"><section><h2>Espace gérant</h2><div class="empty-state">Réservé au gérant et au personnel du complexe. ${Compte.enabled ? "Le rôle est donné par l'administrateur de l'appli." : "Choisissez ce profil dans l'onglet Profil avec votre clé d'entrée."}</div><a class="btn btn-turf btn-block" href="#profil">Aller au profil</a></section></main>`;
     const k = dkey(today());
     const todays = S.bookings.filter((b) => b.date === k).sort((a, b) => a.hour - b.hour || a.terrain - b.terrain);
     const cashToday = S.receipts.filter((r) => r.date === k).reduce((s, r) => s + r.amount, 0);
     const slotsDay = hours().length * C.terrains.length;
     const fill = Math.round((todays.length / slotsDay) * 100);
     const waiting = S.bookings.filter((b) => b.status === "attente" && !isPast(b.date, b.hour)).length;
+    const pending = S.bookings.filter((b) => b.status === "attente" && b.date > k).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
     const toCollect = todays.filter((b) => b.status !== "paye").reduce((s, b) => s + b.price, 0);
     const month = S.receipts.reduce((s, r) => s + r.amount, 0);
     const sessAll = openSessions();
@@ -722,7 +864,7 @@
     // Remplissage moyen par heure sur les 14 derniers jours
     const past = [...Array(14)].map((_, i) => dkey(addDays(today(), -14 + i)));
     const byHour = hours().map((h) => ({ h, v: Math.round((S.bookings.filter((b) => b.hour === h && past.includes(b.date)).length / (past.length * C.terrains.length)) * 100) }));
-    const best = Object.entries(S.bookings.reduce((m, b) => ((m[b.team] = (m[b.team] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const best = Object.entries(S.bookings.filter((b) => b.type !== "session").reduce((m, b) => ((m[b.team] = (m[b.team] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
     return `<main class="wrap">
       <section>
@@ -733,7 +875,8 @@
           <div class="kpi"><span class="label">Acomptes attendus</span><b class="num">${waiting}</b><span class="small muted">${waiting ? "à vérifier sur Wave" : "rien en attente"}</span></div>
         </div>
         <div class="row"><button class="btn btn-turf grow" id="addPhone">Ajouter une réservation téléphone</button></div>
-        <div class="list">${todays.length ? todays.map(staffBk).join("") : '<div class="empty-state">Aucune réservation aujourd\'hui.</div>'}</div>
+        <div class="list">${todays.length ? todays.map((b) => staffBk(b)).join("") : '<div class="empty-state">Aucune réservation aujourd\'hui.</div>'}</div>
+        ${pending.length ? `<h3>Acomptes à vérifier, prochains jours</h3><div class="list">${pending.map((b) => staffBk(b, true)).join("")}</div>` : ""}
       </section>
       <section>
         <div class="sec-head"><h2>Sessions joueurs seuls</h2><button class="link" id="openSess">Ouvrir une session</button></div>
@@ -745,19 +888,23 @@
         <div class="list">${sessAll.slice(0, 4).map(sessionCard).join("")}</div>
       </section>
       <section>
+        <div class="sec-head"><h2>Abonnés</h2><span class="muted small">${money(C.sessions.abonnementMois)} / mois</span></div>
+        ${aboList()}
+      </section>
+      <section>
         <div class="sec-head"><h2>Heures qui remplissent</h2><span class="muted small">14 derniers jours</span></div>
         <div class="card">${hourChart(byHour)}<p class="small muted">En orange, l'heure la plus demandée. Les créneaux pâles sont ceux à pousser avec une promo ou un défi.</p></div>
       </section>
       <section>
         <div class="sec-head"><h2>Caisse</h2><span class="muted small num">${money(month)} sur 14 jours</span></div>
         <div class="card" style="padding:6px 10px"><table class="rank"><thead><tr><th>Reçu</th><th>Équipe</th><th>Mode</th><th class="n">Montant</th></tr></thead><tbody>
-          ${[...S.receipts].reverse().slice(0, 8).map((r) => `<tr><td class="num">n° ${pad(r.n)}</td><td>${esc(r.team)}<div class="small muted">${dayLabel(r.date)} ${hh(r.hour)}</div></td><td>${r.by}</td><td class="n">${money(r.amount)}</td></tr>`).join("")}
+          ${S.receipts.length ? "" : '<tr><td colspan="4" class="muted small">Aucun reçu pour l\'instant.</td></tr>'}${[...S.receipts].reverse().slice(0, 8).map((r) => `<tr><td class="num">n° ${pad(r.n)}</td><td>${esc(r.team)}<div class="small muted">${dayLabel(r.date)} ${hh(r.hour)}</div></td><td>${r.by}</td><td class="n">${money(r.amount)}</td></tr>`).join("")}
         </tbody></table></div>
         <button class="btn btn-ghost btn-block" id="exportCsv">Exporter pour Excel (CSV)</button>
       </section>
       <section>
         <h2>Meilleurs clients</h2>
-        <div class="card" style="padding:6px 10px"><table class="rank"><tbody>${best.map(([n, c], i) => `<tr><td class="num">${i + 1}</td><td>${esc(n)}</td><td class="n">${c} créneaux</td></tr>`).join("")}</tbody></table></div>
+        <div class="card" style="padding:6px 10px"><table class="rank"><tbody>${best.length ? "" : '<tr><td class="muted small">Les équipes qui réservent le plus apparaîtront ici.</td></tr>'}${best.map(([n, c], i) => `<tr><td class="num">${i + 1}</td><td>${esc(n)}</td><td class="n">${c} créneaux</td></tr>`).join("")}</tbody></table></div>
       </section>
       <section>
         <div class="sec-head"><h2>Faire connaître l'appli</h2></div>
@@ -770,19 +917,19 @@
       </section>
       ${S.me.role === "gerant" ? `<section>
         <div class="sec-head"><h2>Personnel</h2><button class="link" id="addStaff">Ajouter</button></div>
-        <div class="list">${S.staff.map((p) => `<div class="card"><div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><div class="grow"><b>${esc(p.name)}</b><div class="small muted">${esc(p.role)}</div></div><span class="chip chip-n num">${esc(p.shift)}</span><button class="link" style="color:var(--bad)" data-rmstaff="${p.id}">Retirer</button></div></div>`).join("")}</div>
+        <div class="list">${S.staff.length ? "" : '<div class="empty-state">Ajoutez l\'équipe du complexe et ses horaires.</div>'}${S.staff.map((p) => `<div class="card"><div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><div class="grow"><b>${esc(p.name)}</b><div class="small muted">${esc(p.role)}</div></div><span class="chip chip-n num">${esc(p.shift)}</span><button class="link" style="color:var(--bad)" data-rmstaff="${p.id}">Retirer</button></div></div>`).join("")}</div>
       </section>` : ""}
     </main>`;
   }
 
-  function staffBk(b) {
+  function staffBk(b, withDay) {
     const past = isPast(b.date, b.hour);
     const res = S.results.find((r) => r.date === b.date && r.hour === b.hour && r.a === b.team);
     const chip = b.status === "paye" ? '<span class="chip chip-ok">Payé</span>' : b.status === "attente" ? '<span class="chip chip-warn">Acompte attendu</span>' : b.status === "absent" ? '<span class="chip chip-bad">Pas venu</span>' : '<span class="chip chip-n">Confirmé</span>';
     return `<div class="card bk">
       <div class="hr num">${hh(b.hour)}</div>
       <div><div class="row"><b class="grow">${b.type === "session" ? `Session : ${b.players.length}/${C.sessions.minJoueurs} joueurs` : esc(b.team)}${b.opponent ? ` vs ${esc(b.opponent)}` : b.type === "defi" ? " (cherche adversaire)" : ""}</b>${chip}</div>
-        <div class="small muted">${esc(C.terrains[b.terrain])} · ${money(b.price)}${b.phone ? ` · ${esc(b.phone)}` : ""}${res ? ` · Score ${res.sa}-${res.sb}` : ""}</div>
+        <div class="small muted">${withDay ? `${dayLabel(b.date)} · ` : ""}${esc(C.terrains[b.terrain])} · ${money(b.price)}${b.phone ? ` · ${esc(b.phone)}` : ""}${res ? ` · Score ${res.sa}-${res.sb}` : ""}</div>
         <div class="acts">
           ${b.status === "attente" ? `<button class="btn btn-turf btn-sm" data-confirm="${b.id}">Acompte reçu</button>` : ""}
           ${b.type === "session" ? `<button class="btn btn-ghost btn-sm" data-sess="${b.id}">Voir les inscrits (${b.players.filter((x) => x.paid).length} payés)</button>` : ""}
@@ -803,9 +950,15 @@
   }
 
   function cash(b, by) {
-    b.status = "paye";
-    S.receipts.push({ n: S.nextReceipt++, date: b.date, hour: b.hour, team: b.team, amount: b.price, by });
-    save(); render(); toast(`Reçu n° ${pad(S.nextReceipt - 1)} enregistré`);
+    cashOp(b, by).then((n) => toast(`Reçu n° ${pad(n)} enregistré`), fail("Encaissement"));
+  }
+
+  // Demandes d'abonnement (le joueur a payé par Wave) et abonnés en cours
+  function aboList() {
+    const list = [...S.abos].sort((a, b) => (a.status === "demande" ? -1 : 1) - (b.status === "demande" ? -1 : 1));
+    if (!list.length) return '<div class="empty-state">Les demandes d\'abonnement des joueurs arrivent ici.</div>';
+    return `<div class="list">${list.map((a) => { const on = a.status === "actif" && a.until > Date.now(); return `<div class="card"><div class="row"><span class="avatars"><i>${initials(a.name)}</i></span><div class="grow"><b>${esc(a.name)}</b><div class="small muted">${a.status === "demande" ? "dit avoir payé par Wave, à vérifier" : on ? `jusqu'au ${dayLabel(dkey(new Date(a.until))).toLowerCase()}` : "abonnement terminé"}</div></div>
+      ${on ? '<span class="chip chip-ok">Actif</span>' : ""}<button class="btn ${on ? "btn-ghost" : "btn-turf"} btn-sm" data-abo="${esc(a.id)}">${on ? "+30 jours" : "Activer 30 jours"}</button></div></div>`; }).join("")}</div>`;
   }
 
   function cashSheet(id) {
@@ -818,7 +971,7 @@
 
   function scoreSheet(id) {
     const b = S.bookings.find((x) => x.id === id);
-    const players = S.dispos.map((p) => p.name);
+    const players = [...new Set([...S.dispos.map((p) => p.name), ...S.bookings.flatMap((x) => x.players.map((p) => p.name))])];
     sheet(`${head("Score du match", `${esc(b.team)} vs ${esc(b.opponent)}`)}
       <form id="scoreForm" class="list">
         <div class="row"><div class="field grow"><label for="sA">${esc(b.team)}</label><input class="input num" id="sA" type="number" min="0" max="40" required value="0"></div><div class="field grow"><label for="sB">${esc(b.opponent)}</label><input class="input num" id="sB" type="number" min="0" max="40" required value="0"></div></div>
@@ -829,10 +982,12 @@
       el.querySelector("#scoreForm").addEventListener("submit", (e) => {
         e.preventDefault();
         const sa = +el.querySelector("#sA").value, sb = +el.querySelector("#sB").value, motm = el.querySelector("#sM").value.trim() || "Non désigné";
-        S.results.push({ id: uid(), date: b.date, hour: b.hour, a: b.team, b: b.opponent, sa, sb, motm });
-        applyResult(S.teams, b.team, b.opponent, sa, sb);
-        if (S.me.name && motm === S.me.name) S.me.motm++;
-        save(); closeSheet(); render(); toast("Résultat publié");
+        const teams = S.teams.filter((t) => t.name === b.team || t.name === b.opponent).map((t) => ({ ...t }));
+        applyResult(teams, b.team, b.opponent, sa, sb);
+        closeSheet();
+        put("resultats", null, { date: b.date, hour: b.hour, a: b.team, b: b.opponent, sa, sb, motm, at: NOW })
+          .then(() => Promise.all(teams.map((t) => patch("equipes", t.id, { elo: t.elo, w: t.w, d: t.d, l: t.l, gf: t.gf, ga: t.ga }))))
+          .then(() => toast("Résultat publié"), fail("Score"));
       });
     });
   }
@@ -853,9 +1008,10 @@
         const kk = el.querySelector("#pDay").value, h = +el.querySelector("#pHour").value, ti = +el.querySelector("#pTer").value;
         if (findBk(kk, h, ti)) { toast("Ce créneau est déjà pris"); return; }
         if (isPast(kk, h)) { toast("Cette heure est déjà passée"); return; }
-        const name = el.querySelector("#pTeam").value.trim(), team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase());
-        S.bookings.push({ id: uid(), date: kk, hour: h, terrain: ti, team: team ? team.name : name, teamId: team ? team.id : "", phone: el.querySelector("#pPhone").value.trim(), opponent: "", type: "prive", niveau: "Moyen", price: price(kk, h), status: "confirme", createdAt: Date.now() });
-        save(); closeSheet(); render(); toast("Réservation ajoutée");
+        const name = el.querySelector("#pTeam").value.trim(), team = S.teams.find((x) => x.name.toLowerCase() === name.toLowerCase()), phone = el.querySelector("#pPhone").value.trim(), id = slotId(kk, h, ti);
+        closeSheet();
+        claim(id, { date: kk, hour: h, terrain: ti, team: team ? team.name : name, teamId: team ? team.id : "", opponent: "", opponentId: "", type: "prive", niveau: "Moyen", price: price(kk, h), status: "confirme", by: myId(), createdAt: NOW })
+          .then(() => { toast("Réservation ajoutée"); if (phone) put("contacts", id, { phone, name, by: myId() }).catch(() => {}); }, fail("Réservation téléphone"));
       });
     });
   }
@@ -867,12 +1023,12 @@
         <div class="field"><label for="stR">Rôle</label><input class="input" id="stR" placeholder="Ex. Caisse, arbitre, entretien" required></div>
         <div class="field"><label for="stS">Horaires</label><input class="input" id="stS" placeholder="Ex. 17h - 00h"></div>
         <button class="btn btn-bib btn-block" type="submit">Ajouter</button>
-        <p class="small muted">Donnez-lui la clé personnel pour qu'il ouvre l'espace gérant sur son téléphone.</p>
+        <p class="small muted">${Compte.enabled ? "Pour ouvrir l'espace gérant sur son téléphone, il crée son compte dans l'appli et l'administrateur lui donne le rôle Personnel." : "Donnez-lui la clé personnel pour qu'il ouvre l'espace gérant sur son téléphone."}</p>
       </form>`, (el) => {
       el.querySelector("#stForm").addEventListener("submit", (e) => {
         e.preventDefault();
-        S.staff.push({ id: uid(), name: el.querySelector("#stN").value.trim(), role: el.querySelector("#stR").value.trim(), shift: el.querySelector("#stS").value.trim() || "-" });
-        save(); closeSheet(); render();
+        const d = { name: el.querySelector("#stN").value.trim(), role: el.querySelector("#stR").value.trim(), shift: el.querySelector("#stS").value.trim() || "-" };
+        closeSheet(); put("personnel", null, d).catch(fail("Personnel"));
       });
     });
   }
@@ -894,7 +1050,7 @@
   // Sans Firebase, #admin montre un aperçu avec des comptes fictifs.
   let account = null, adminData = null, adminQuery = "", adminFilter = "tous";
   // mode : null, { type: "voir", who } (l'appli comme un client la voit, lecture seule) ou { type: "demo" } (présentation)
-  let mode = null, realS = null;
+  let mode = null, modeMe = null;
   const act = () => { if (!mode) Compte.track(); };
   const logRefus = (msg) => Compte.logError("refus", msg);
   Compte.setRole(() => S.me.role);
@@ -915,7 +1071,7 @@
 
   function demoAdmin() {
     const r = rng(7), now = Date.now(), quartiers = ["Médina", "Grand Yoff", "Parcelles", "Sicap", "HLM", "Ouakam"];
-    const users = S.dispos.map((p, i) => {
+    const users = Object.values(seed().dispos).map((p, i) => {
       const activite = {};
       for (let d = 0; d < 7; d++) if (i % 4 && r() < 0.45) activite[dkey(addDays(today(), -d))] = 1 + Math.floor(r() * 3);
       return { uid: "demo" + i, name: p.name, email: "", tel: `77 ${pad(10 + i)} ${pad(20 + i)} ${pad(30 + i)}`, quartier: quartiers[i % quartiers.length], role: i === 0 ? "gerant" : i === 1 ? "personnel" : i < 5 ? "capitaine" : "joueur", poste: p.poste,
@@ -977,9 +1133,10 @@
           <div class="small muted">Inscrit ${ago(u.created)} · vu ${ago(u.lastSeen)} · <b style="color:var(--ink)">${n} action${n > 1 ? "s" : ""}</b> cette semaine (réservations, sessions, défis)${e ? ` · <b style="color:var(--bad)">${e} erreur${e > 1 ? "s" : ""}</b>` : ""}</div>
           <div class="row">${u.uid === (account && account.uid) ? "" : `<button class="btn ${u.active ? "btn-ghost" : "btn-turf"} btn-sm" data-toggle="${esc(u.uid)}" data-active="${u.active ? "0" : "1"}">${u.active ? "Suspendre" : "Réactiver"}</button>`}
             ${u.tel ? `<a class="btn btn-wa btn-sm" href="${waLink(`Bonjour ${u.name || ""}, ici l'équipe de l'appli ${C.nomCourt}. `, telWa(u.tel))}" target="_blank" rel="noopener">${WA_ICON}WhatsApp</a>` : ""}
-            <button class="btn btn-bib btn-sm" data-voir="${esc(u.uid)}">Voir</button></div>
+            <button class="btn btn-bib btn-sm" data-voir="${esc(u.uid)}">Voir</button>
+            <select class="input input-sm" data-role="${esc(u.uid)}" aria-label="Rôle de ${esc(u.name || "ce client")}">${Object.entries(ROLE_NAMES).map(([k, l]) => `<option value="${k}" ${u.role === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         </div>`; }).join("") : '<div class="empty-state">Aucun client ne correspond.</div>'}</div>
-        <p class="small muted">« Voir » ouvre l'appli comme ce client la voit, avec son rôle, en lecture seule : rien n'est enregistré.</p>
+        <p class="small muted">« Voir » ouvre l'appli comme ce client la voit, avec son rôle, en lecture seule : rien n'est enregistré. Le rôle Gérant ou Personnel ouvre l'espace gérant du complexe à ce compte.</p>
       </section>
       <section>
         <h2>Erreurs des 7 derniers jours</h2>
@@ -992,31 +1149,34 @@
     </main>`;
   }
 
+  function setRole(uid, role) {
+    const u = adminData.users.find((x) => x.uid === uid), done = () => { u.role = role; render(); toast(`${u.name || "Compte"} : ${ROLE_NAMES[role]}`); };
+    if (!Compte.enabled) return done();
+    Compte.admin.setRole(uid, role).then(done, () => { toast("Refusé : ce compte n'est pas admin dans les règles Firebase"); render(); });
+  }
+
   function toggleAccount(uid, active) {
     const u = adminData.users.find((x) => x.uid === uid), done = () => { u.active = active; render(); toast(active ? `${u.name || "Compte"} réactivé` : `${u.name || "Compte"} suspendu`); };
     if (!Compte.enabled) return done();
     Compte.admin.setActive(uid, active).then(done, () => toast("Refusé : ce compte n'est pas admin dans les règles Firebase"));
   }
 
-  // Voir : l'appli avec le profil et le rôle du client, sur les données de ce téléphone, sans rien enregistrer
+  // Voir : l'appli avec le profil et le rôle du client, sur les vraies données en ligne, sans rien enregistrer
   async function startVoir(uid) {
     let who = adminData && adminData.users.find((u) => u.uid === uid);
     if (Compte.enabled) who = await Compte.admin.user(uid).catch(() => who);
     if (!who) return toast("Compte introuvable");
-    if (!mode) realS = S;
-    S = JSON.parse(JSON.stringify(realS));
-    S.me = { ...S.me, name: who.name || "Client", role: who.role || "joueur", poste: who.poste || "Milieu", teamId: "", slots: [], goals: 0, motm: 0, abonne: false };
     mode = { type: "voir", who };
-    location.hash = who.role === "gerant" || who.role === "personnel" ? "gerant" : "accueil"; render();
+    modeMe = { name: who.name || "Client", role: who.role || "joueur", poste: who.poste || "Milieu", equipe: who.equipe || "" };
+    derive(); location.hash = who.role === "gerant" || who.role === "personnel" ? "gerant" : "accueil"; render();
   }
   // Présentation : données d'exemple neuves, rôle choisi dans la barre du haut
   function startDemo(role) {
-    if (!mode) realS = S;
-    if (!mode || mode.type !== "demo") { S = seed(); S.me = { ...S.me, name: "Démo", teamId: S.teams[0].id }; }
-    S.me.role = role; mode = { type: "demo" };
-    location.hash = role === "gerant" || role === "personnel" ? "gerant" : "accueil"; render();
+    if (!mode || mode.type !== "demo") { DEMO = seed(); modeMe = { name: "Démo", poste: "Milieu", equipe: "t0" }; }
+    modeMe.role = role; mode = { type: "demo" };
+    derive(); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "accueil"; render();
   }
-  function stopMode() { if (realS) S = realS; mode = null; realS = null; adminData = null; location.hash = "admin"; render(); }
+  function stopMode() { mode = null; modeMe = null; DEMO = null; adminData = null; derive(); location.hash = "admin"; render(); }
   function modeBar() {
     if (!mode) return "";
     const roles = Object.entries(ROLE_NAMES);
@@ -1026,10 +1186,12 @@
       <button class="iconbtn" data-stopmode aria-label="Quitter">×</button></div></div>`;
   }
   // En lecture seule, les boutons qui enregistrent quelque chose sont bloqués
-  const WRITE_SEL = "[data-book],[data-defi],[data-sess],[data-pay],[data-cancel],[data-join],[data-leave],[data-slot],[data-confirm],[data-cash],[data-absent],[data-score],[data-sub],#newNeed,#addPhone,#addStaff,[data-rmstaff],#openSess,#resetDemo,#editProfile,#signOut,[data-forecast]";
+  const WRITE_SEL = "[data-book],[data-defi],[data-sess],[data-pay],[data-cancel],[data-join],[data-leave],[data-slot],[data-confirm],[data-cash],[data-absent],[data-score],[data-sub],[data-abo],[data-ppaid],#newNeed,#addPhone,#addStaff,[data-rmstaff],#openSess,#editProfile,#signOut,[data-forecast]";
   document.addEventListener("click", (e) => {
-    if (!mode || mode.type !== "voir") return;
-    if (e.target.closest(WRITE_SEL) || (e.target.closest("button[type=submit]"))) { e.preventDefault(); e.stopImmediatePropagation(); toast("Vue en lecture seule : rien n'est modifié"); }
+    const w = e.target.closest(WRITE_SEL);
+    if (mode && mode.type === "voir" && (w || e.target.closest("button[type=submit]"))) { e.preventDefault(); e.stopImmediatePropagation(); toast("Vue en lecture seule : rien n'est modifié"); return; }
+    // Avec les comptes, il faut être connecté pour réserver, jouer ou s'inscrire
+    if (w && Compte.enabled && !account && !mode) { e.preventDefault(); e.stopImmediatePropagation(); closeSheet(); toast("Connectez-vous d'abord, ça prend 20 secondes"); location.hash = "profil"; }
   }, true);
   document.addEventListener("submit", (e) => { if (mode && mode.type === "voir") { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
 
@@ -1043,6 +1205,7 @@
   const current = () => { const h = location.hash.slice(1); return VIEWS[h] ? h : "accueil"; };
 
   function render() {
+    derive();
     const v = current();
     const tabs = Object.keys(VIEWS).filter((k) => (k !== "gerant" || isStaff()) && (k !== "admin" || (canAdmin() && !mode)));
     if (account && !account.active) {
@@ -1051,7 +1214,7 @@
       return;
     }
     $("#app").innerHTML = `
-      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span>${S.demo ? '<span class="demo-badge">Démo</span>' : ""}<span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div>${modeBar()}</header>
+      <header class="top"><div class="wrap">${crest()}<span class="brand">${esc(C.nom)}</span><span class="who">${S.me.name ? esc(S.me.name) : '<a href="#profil" style="color:inherit">Se connecter</a>'}</span><button class="iconbtn" data-sharesheet aria-label="Partager l'appli"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg></button></div>${modeBar()}</header>
       ${VIEWS[v]()}
       <div class="tabs"><nav style="--n:${tabs.length}">${tabs.map((k) => `<a href="#${k}" ${k === v ? 'aria-current="page"' : ""}>${icon(k)}${LABELS[k]}</a>`).join("")}</nav></div>`;
     document.title = `${C.nomCourt} · ${LABELS[v]}`;
@@ -1062,16 +1225,17 @@
     const app = $("#app");
     const f = $("#meForm");
     if (f) {
-      const sync = () => { const r = f.querySelector("[name=mRole]:checked").value; $("#keyField").hidden = !(r === "gerant" || r === "personnel"); };
+      const sync = () => { const r = f.querySelector("[name=mRole]:checked").value; $("#keyField").hidden = Compte.enabled || !(r === "gerant" || r === "personnel"); };
       f.addEventListener("change", sync); sync();
       f.addEventListener("submit", (e) => {
         e.preventDefault();
         const role = f.querySelector("[name=mRole]:checked").value, key = ($("#mKey").value || "").trim().toUpperCase();
-        if ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel)) { toast("Clé d'entrée incorrecte"); logRefus(`Clé d'entrée incorrecte (${role})`); return; }
-        Object.assign(S.me, { name: $("#mName").value.trim(), poste: f.querySelector("[name=mPoste]:checked").value, teamId: $("#mTeam").value, role });
-        save();
-        if (account) Object.assign(account, { name: S.me.name, role, poste: S.me.poste, tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "" });
-        if (account) Compte.saveProfile(account).catch(() => toast("Profil gardé sur ce téléphone, l'envoi en ligne a échoué")); location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render(); toast("Profil enregistré");
+        if (!Compte.enabled && ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel))) { toast("Clé d'entrée incorrecte"); return; }
+        const p = { name: $("#mName").value.trim(), poste: f.querySelector("[name=mPoste]:checked").value, equipe: $("#mTeam").value, role };
+        if (account) Object.assign(p, { tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "" });
+        setMe(p).then(() => toast("Profil enregistré"), fail("Profil"));
+        if (account) put("dispos", myId(), { name: p.name, poste: p.poste, slots: S.me.slots }).catch(() => {});
+        location.hash = role === "gerant" || role === "personnel" ? "gerant" : "profil"; render();
       });
     }
     const on = (sel, fn) => app.querySelectorAll(sel).forEach((el) => el.addEventListener("click", (e) => fn(el, e)));
@@ -1084,26 +1248,32 @@
     on("#qrBig", qrFull);
     on("#installApp", () => { installEvt.prompt(); installEvt.userChoice.finally(() => { installEvt = null; render(); }); });
     on("#openSess", openSessSheet);
-    on("[data-pay]", (el) => paySheet(el.dataset.pay));
+    on("[data-pay]", (el) => paySheet(S.bookings.find((x) => x.id === el.dataset.pay)));
     on("[data-cancel]", (el) => cancelSheet(el.dataset.cancel));
     on("[data-seg]", (el) => { seg = el.dataset.seg; render(); });
     on("#newDefi", () => { pendingDefi = true; toast("Touchez un créneau libre pour lancer votre défi"); });
     on("#newNeed", needSheet);
     on("[data-join]", (el) => {
       if (!S.me.name) { toast("Créez d'abord votre profil"); location.hash = "profil"; return; }
-      const n = S.needs.find((x) => x.id === el.dataset.join); n.joined.push(S.me.name); act(); save(); render(); toast(`C'est noté, ${n.team} compte sur vous`);
+      const n = S.needs.find((x) => x.id === el.dataset.join);
+      patch("annonces", n.id, { ["joined." + myId()]: S.me.name }).then(() => { act(); toast(`C'est noté, ${n.team} compte sur vous`); }, fail("Réponse à l'annonce"));
     });
-    on("[data-leave]", (el) => { const n = S.needs.find((x) => x.id === el.dataset.leave); n.joined = n.joined.filter((j) => j !== S.me.name); save(); render(); });
-    on("[data-slot]", (el) => { const s = el.dataset.slot, i = S.me.slots.indexOf(s); i >= 0 ? S.me.slots.splice(i, 1) : S.me.slots.push(s); save(); render(); });
+    on("[data-leave]", (el) => patch("annonces", el.dataset.leave, { ["joined." + myId()]: DEL }).catch(fail("Réponse à l'annonce")));
+    on("[data-slot]", (el) => {
+      if (!S.me.name) { toast("Créez d'abord votre profil"); location.hash = "profil"; return; }
+      const s = el.dataset.slot, slots = S.me.slots.includes(s) ? S.me.slots.filter((x) => x !== s) : [...S.me.slots, s];
+      put("dispos", myId(), { name: S.me.name, poste: S.me.poste, slots }).catch(fail("Disponibilités"));
+    });
     on("[data-forecast]", (el) => { const [k, h] = el.dataset.forecast.split("|"); forecastSheet(k, +h); });
-    on("#editProfile", () => { const n = S.me.name; S.me.name = ""; $("#app").querySelector("main").outerHTML = onboarding(); S.me.name = n; $("#mName").value = n; bindView(); });
-    on("#resetDemo", () => sheet(`${head("Remettre la démo ?")}<p>Les réservations, profils et résultats de ce téléphone seront remplacés par les données de démo.</p><div class="row"><button class="btn btn-ghost grow" data-close>Garder</button><button class="btn btn-bib grow" id="doReset">Remettre la démo</button></div>`, (el) => el.querySelector("#doReset").addEventListener("click", () => { S = seed(); save(); closeSheet(); location.hash = "accueil"; render(); })));
+    on("#editProfile", () => { $("#app").querySelector("main").outerHTML = onboarding(); bindView(); });
     on("#addPhone", phoneSheet);
     on("#addStaff", staffSheet);
-    on("[data-rmstaff]", (el) => { S.staff = S.staff.filter((p) => p.id !== el.dataset.rmstaff); save(); render(); });
-    on("[data-confirm]", (el) => { S.bookings.find((x) => x.id === el.dataset.confirm).status = "confirme"; save(); render(); toast("Acompte validé, l'équipe est prévenue"); });
+    on("[data-rmstaff]", (el) => drop("personnel", el.dataset.rmstaff).catch(fail("Personnel")));
+    on("[data-confirm]", (el) => patch("creneaux", el.dataset.confirm, { status: "confirme" }).then(() => toast("Acompte validé, la réservation est confirmée"), fail("Acompte")));
+    on("[data-abo]", (el) => { const a = S.abos.find((x) => x.id === el.dataset.abo), from = Math.max(Date.now(), a.status === "actif" && a.until > Date.now() ? a.until : 0);
+      patch("abonnes", a.id, { status: "actif", until: new Date(from + 30 * 864e5) }).then(() => toast(`${a.name} abonné jusqu'au ${dayLabel(dkey(new Date(from + 30 * 864e5))).toLowerCase()}`), fail("Abonnement")); });
     on("[data-cash]", (el) => cashSheet(el.dataset.cash));
-    on("[data-absent]", (el) => { S.bookings.find((x) => x.id === el.dataset.absent).status = "absent"; save(); render(); });
+    on("[data-absent]", (el) => patch("creneaux", el.dataset.absent, { status: "absent" }).catch(fail("Absence")));
     on("[data-score]", (el) => scoreSheet(el.dataset.score));
     on("#exportCsv", exportCsv);
     on("[data-afilter]", (el) => { adminFilter = el.dataset.afilter; render(); });
@@ -1113,14 +1283,15 @@
     on("[data-stopmode]", stopMode);
     on("#adminReload", () => { adminData = null; render(); });
     on("[data-toggle]", (el) => toggleAccount(el.dataset.toggle, el.dataset.active === "1"));
+    app.querySelectorAll("[data-role]").forEach((el) => el.addEventListener("change", () => setRole(el.dataset.role, el.value)));
     on("[data-delerr]", (el) => {
       const id = el.dataset.delerr, drop = () => { adminData.errors = adminData.errors.filter((e) => e.id !== id); render(); };
       Compte.enabled ? Compte.admin.deleteError(id).then(drop, (e) => toast("Refusé : " + e.message)) : drop();
     });
     const search = $("#adminSearch");
     search && search.addEventListener("input", () => { adminQuery = search.value; const pos = search.selectionStart; render(); const s2 = $("#adminSearch"); s2.focus(); s2.setSelectionRange(pos, pos); });
-    on("#signOut", () => Compte.signOut().then(() => { account = null; adminData = null; location.hash = "profil"; render(); toast("Déconnecté"); }));
-    const signedIn = (p) => { account = p; adminData = null; if (p) { S.me.name = S.me.name || p.name; if (p.role && p.role !== "gerant" && p.role !== "personnel") S.me.role = p.role; save(); } render(); };
+    on("#signOut", () => Compte.signOut().then(() => { account = null; adminData = null; listen(); derive(); location.hash = "profil"; render(); toast("Déconnecté"); }));
+    const signedIn = (p) => { account = p; adminData = null; listen(); derive(); render(); };
     const authFail = (e) => { logRefus("Connexion refusée : " + (e.code || e.message)); toast(/wrong-password|invalid-credential|user-not-found/.test(e.code || "") ? "E-mail ou mot de passe incorrect" : /email-already/.test(e.code || "") ? "Ce compte existe déjà, connectez-vous" : "Connexion impossible : " + (e.code || e.message)); };
     on("#gSignIn", () => Compte.signIn().then((p) => p && signedIn(p), authFail));
     const mf = $("#mailForm");
@@ -1132,8 +1303,8 @@
   let pendingDefi = false;
 
   window.addEventListener("hashchange", () => { closeSheet(); if (current() === "admin") adminData = null; render(); window.scrollTo(0, 0); });
-  render();
-  if (Compte.enabled) Compte.start().then((p) => { account = p; if (p) { S.me.name = S.me.name || p.name; save(); } render(); }, (e) => { console.warn(e); toast("Connexion au serveur impossible, l'appli continue sur ce téléphone"); });
+  derive(); render();
+  if (Compte.enabled) Compte.start().then((p) => { account = p; listen(); derive(); render(); }, (e) => { console.warn(e); toast("Connexion au serveur impossible, vérifiez Internet puis rouvrez l'appli"); });
   setInterval(() => { if (current() === "planning" && !$("#scrim")) render(); }, 60000);
   if ("serviceWorker" in navigator && location.protocol === "https:" && window.top === window) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

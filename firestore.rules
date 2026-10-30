@@ -10,52 +10,183 @@ service cloud.firestore {
     function roleOk(r) { return r in ['joueur', 'capitaine', 'personnel', 'gerant']; }
     // activité : nombre d'actions par jour, 14 jours au plus
     function activiteOk(a) { return a is map && a.size() <= 14; }
+    function userDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    // Compte inscrit et non suspendu : seul un tel compte enregistre quelque chose
+    function actif() { return signedIn() && exists(userDoc()) && get(userDoc()).data.active == true; }
+    // Gérant et personnel du complexe : rôle donné par l'admin
+    function staff() { return actif() && get(userDoc()).data.role in ['gerant', 'personnel']; }
+    function gerant() { return actif() && get(userDoc()).data.role == 'gerant'; }
+    function d() { return request.resource.data; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
     // L'admin peut tout lire (voir l'appli comme un client la voit, pour le support), sans rien modifier
-    // d'autre que la suspension d'un compte.
+    // d'autre que la suspension et le rôle d'un compte.
     match /{document=**} { allow read: if admin(); }
 
     // Fiche de chaque compte client
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
-      // création par le client lui-même, actif, avec les dates du serveur
+      // création par le client lui-même, actif, joueur ou capitaine, avec les dates du serveur
       allow create: if signedIn() && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['name', 'email', 'tel', 'quartier', 'created', 'lastSeen', 'active', 'role', 'poste', 'activite'])
-        && request.resource.data.active == true
-        && request.resource.data.created == request.time
-        && request.resource.data.lastSeen == request.time
-        && str(request.resource.data.name, 80) && str(request.resource.data.email, 120)
-        && str(request.resource.data.tel, 30) && str(request.resource.data.quartier, 60)
-        && roleOk(request.resource.data.role) && str(request.resource.data.poste, 30)
-        && activiteOk(request.resource.data.activite);
-      // un compte actif met à jour ses infos et son activité ; jamais son statut ni sa date d'inscription.
-      // Un compte suspendu ne peut plus rien enregistrer, et ne peut pas lever sa suspension.
+        && d().keys().hasOnly(['name', 'email', 'tel', 'quartier', 'created', 'lastSeen', 'active', 'role', 'poste', 'activite', 'equipe'])
+        && d().active == true
+        && d().created == request.time
+        && d().lastSeen == request.time
+        && str(d().name, 80) && str(d().email, 120)
+        && str(d().tel, 30) && str(d().quartier, 60)
+        && d().role in ['joueur', 'capitaine'] && str(d().poste, 30)
+        && activiteOk(d().activite);
+      // un compte actif met à jour ses infos et son activité ; jamais son statut, sa date d'inscription,
+      // ni un rôle du personnel. Un compte suspendu ne peut plus rien enregistrer, et ne peut pas lever sa suspension.
       allow update: if signedIn() && request.auth.uid == uid
         && resource.data.active == true
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'tel', 'quartier', 'role', 'poste', 'lastSeen', 'activite'])
-        && request.resource.data.lastSeen == request.time
+        && changed().hasOnly(['name', 'tel', 'quartier', 'role', 'poste', 'equipe', 'lastSeen', 'activite'])
+        && d().lastSeen == request.time
         // get() : les fiches créées avant l'ajout du téléphone, du quartier et de l'activité n'ont pas ces champs
-        && str(request.resource.data.name, 80) && str(request.resource.data.get('tel', ''), 30) && str(request.resource.data.get('quartier', ''), 60)
-        && roleOk(request.resource.data.role) && str(request.resource.data.poste, 30)
-        && activiteOk(request.resource.data.get('activite', {}));
-      // l'admin suspend ou réactive un compte, et rien d'autre
+        && str(d().name, 80) && str(d().get('tel', ''), 30) && str(d().get('quartier', ''), 60)
+        && (d().role == resource.data.role || d().role in ['joueur', 'capitaine'])
+        && str(d().poste, 30) && str(d().get('equipe', ''), 40)
+        && activiteOk(d().get('activite', {}));
+      // l'admin suspend, réactive ou donne un rôle (gérant, personnel), et rien d'autre
       allow update: if admin()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
-        && request.resource.data.active is bool;
+        && changed().hasOnly(['active', 'role'])
+        && d().active is bool && roleOk(d().role);
       allow delete: if false;
     }
 
     // Erreurs remontées par les téléphones : chaque compte connecté envoie les siennes, seul l'admin les lit et les efface
     match /erreurs/{id} {
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['kind', 'msg', 'route', 'uid', 'name', 'role', 'ua', 'at'])
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.kind in ['plantage', 'refus']
-        && str(request.resource.data.msg, 500) && str(request.resource.data.route, 60)
-        && str(request.resource.data.name, 80) && str(request.resource.data.role, 20) && str(request.resource.data.ua, 200)
-        && request.resource.data.at == request.time;
+        && d().keys().hasOnly(['kind', 'msg', 'route', 'uid', 'name', 'role', 'ua', 'at'])
+        && d().uid == request.auth.uid
+        && d().kind in ['plantage', 'refus']
+        && str(d().msg, 500) && str(d().route, 60)
+        && str(d().name, 80) && str(d().role, 20) && str(d().ua, 200)
+        && d().at == request.time;
       allow delete: if admin();
       allow update: if false;
+    }
+
+    // Planning : réservations, défis et sessions « Je veux jouer ». Un document par créneau, nommé date_heure_terrain,
+    // donc deux téléphones ne peuvent pas prendre le même créneau. Lisible par tous (vitrine), sans téléphone.
+    match /creneaux/{id} {
+      function bkOk() {
+        return d().keys().hasOnly(['date', 'hour', 'terrain', 'team', 'teamId', 'opponent', 'opponentId', 'opBy', 'type', 'niveau', 'price', 'status', 'by', 'createdAt', 'players'])
+          && id == d().date + '_' + string(d().hour) + '_' + string(d().terrain)
+          && d().date is string && d().date.size() == 10
+          && d().hour is int && d().hour >= 0 && d().hour <= 23 && d().terrain is int && d().terrain >= 0 && d().terrain <= 9
+          && str(d().team, 60) && str(d().opponent, 60) && str(d().niveau, 20)
+          && d().type in ['prive', 'defi', 'session'] && d().status in ['attente', 'confirme', 'paye', 'absent']
+          && d().get('players', {}) is map && d().get('players', {}).size() <= 14;
+      }
+      // tarif réduit seulement pour un abonné en cours
+      function aboActif() {
+        let a = /databases/$(database)/documents/abonnes/$(request.auth.uid);
+        return exists(a) && get(a).data.status == 'actif' && get(a).data.until > request.time;
+      }
+      // sa propre ligne dans une session : pas encore payée (le personnel coche « payé »)
+      function myPlayerOk(p) {
+        return !(request.auth.uid in p) || (p[request.auth.uid].keys().hasOnly(['name', 'poste', 'paid', 'abonne', 'at'])
+          && str(p[request.auth.uid].name, 80) && str(p[request.auth.uid].poste, 30)
+          && p[request.auth.uid].paid == false && (p[request.auth.uid].abonne == false || aboActif()));
+      }
+      allow read: if true;
+      // un joueur réserve pour son équipe (en attente d'acompte), ou ouvre une session avec lui seul dedans
+      allow create: if actif() && bkOk() && d().createdAt == request.time && (
+          (d().type in ['prive', 'defi'] && d().by == request.auth.uid && d().status == 'attente'
+            && d().opponent == '' && d().price is int && d().price >= 0 && !('players' in d()))
+          || (d().type == 'session' && d().by == '' && d().status == 'confirme'
+            && d().players.keys().hasOnly([request.auth.uid]) && myPlayerOk(d().players)));
+      allow create: if staff() && bkOk() && d().createdAt == request.time;
+      // relever un défi encore ouvert
+      allow update: if actif() && resource.data.type == 'defi' && resource.data.opponent == ''
+        && changed().hasOnly(['opponent', 'opponentId', 'opBy'])
+        && d().opBy == request.auth.uid && str(d().opponent, 60) && d().opponent != '';
+      // s'inscrire à une session ou s'en retirer : on ne touche qu'à sa propre ligne
+      allow update: if actif() && resource.data.type == 'session'
+        && changed().hasOnly(['players'])
+        && d().players.diff(resource.data.players).affectedKeys().hasOnly([request.auth.uid])
+        && d().players.size() <= 14 && myPlayerOk(d().players);
+      // le personnel confirme les acomptes, encaisse, note les absents et gère les sessions
+      allow update: if staff() && bkOk();
+      // annulation par celui qui a réservé ou par le personnel ; un créneau en attente d'acompte depuis plus de
+      // 15 minutes (attenteAcompteMinutes de config.js) peut être libéré par n'importe quel compte
+      allow delete: if staff() || (actif() && resource.data.by == request.auth.uid)
+        || (actif() && resource.data.status == 'attente' && request.time > resource.data.createdAt + duration.value(15, 'm'));
+    }
+
+    // Téléphone du capitaine d'une réservation : lu par le personnel seulement
+    match /contacts/{id} {
+      function slot() { return /databases/$(database)/documents/creneaux/$(id); }
+      allow read: if staff() || (signedIn() && resource.data.by == request.auth.uid);
+      allow create, update: if actif() && d().keys().hasOnly(['phone', 'name', 'by']) && str(d().phone, 30) && str(d().name, 80)
+        && d().by == request.auth.uid && (staff() || (exists(slot()) && get(slot()).data.by == request.auth.uid));
+      allow delete: if staff() || (signedIn() && resource.data.by == request.auth.uid);
+    }
+
+    // Équipes et classement : chacun crée son équipe, seul le personnel met à jour les points (après un score)
+    match /equipes/{id} {
+      allow read: if true;
+      allow create: if actif() && d().keys().hasOnly(['name', 'captain', 'color', 'elo', 'w', 'd', 'l', 'gf', 'ga', 'by'])
+        && d().by == request.auth.uid && str(d().name, 60) && str(d().captain, 80) && str(d().color, 10)
+        && d().elo == 1050 && d().w == 0 && d().d == 0 && d().l == 0 && d().gf == 0 && d().ga == 0;
+      allow update: if staff() && changed().hasOnly(['elo', 'w', 'd', 'l', 'gf', 'ga', 'name', 'color']);
+      allow delete: if staff();
+    }
+
+    // Scores publiés par le personnel
+    match /resultats/{id} {
+      allow read: if true;
+      allow create: if staff() && d().keys().hasOnly(['date', 'hour', 'a', 'b', 'sa', 'sb', 'motm', 'at'])
+        && d().sa is int && d().sb is int && str(d().motm, 80) && d().at == request.time;
+      allow delete: if staff();
+    }
+
+    // « Il manque des joueurs » : l'équipe publie, chaque joueur ne coche que sa propre présence
+    match /annonces/{id} {
+      allow read: if true;
+      allow create: if actif() && d().keys().hasOnly(['bookingId', 'team', 'date', 'hour', 'terrain', 'missing', 'poste', 'joined', 'by', 'at'])
+        && d().by == request.auth.uid && d().joined.size() == 0 && d().missing is int && d().missing >= 1 && d().missing <= 5
+        && str(d().team, 60) && str(d().poste, 30) && d().at == request.time;
+      allow update: if actif() && (resource.data.by == request.auth.uid || staff());
+      allow update: if actif() && changed().hasOnly(['joined'])
+        && d().joined.diff(resource.data.joined).affectedKeys().hasOnly([request.auth.uid])
+        && (!(request.auth.uid in d().joined) || str(d().joined[request.auth.uid], 80));
+      allow delete: if actif() && (resource.data.by == request.auth.uid || staff());
+    }
+
+    // Disponibilités de chaque joueur (carte des créneaux où il est libre)
+    match /dispos/{uid} {
+      allow read: if signedIn();
+      allow write: if actif() && request.auth.uid == uid && d().keys().hasOnly(['name', 'poste', 'slots'])
+        && str(d().name, 80) && str(d().poste, 30) && d().slots is list && d().slots.size() <= 50;
+    }
+
+    // Abonnement joueur : le joueur signale son paiement Wave, le personnel l'active 30 jours
+    match /abonnes/{uid} {
+      allow read: if staff() || (signedIn() && request.auth.uid == uid);
+      allow create: if actif() && request.auth.uid == uid && d().keys().hasOnly(['name', 'status', 'at'])
+        && d().status == 'demande' && str(d().name, 80) && d().at == request.time;
+      allow update: if actif() && request.auth.uid == uid && changed().hasOnly(['name', 'status', 'at'])
+        && d().status == 'demande' && str(d().name, 80) && d().at == request.time;
+      allow update: if staff() && changed().hasOnly(['status', 'until']) && d().status in ['actif', 'fin'] && d().until is timestamp;
+      allow delete: if staff();
+    }
+
+    // Caisse : reçus numérotés, jamais modifiés ni effacés
+    match /caisse/{id} {
+      allow read: if staff();
+      allow create: if staff() && d().keys().hasOnly(['n', 'date', 'hour', 'team', 'amount', 'by', 'at', 'staff'])
+        && d().n is int && d().amount is int && d().staff == request.auth.uid && d().at == request.time;
+    }
+    match /meta/caisse {
+      allow read, write: if staff();
+    }
+
+    // Équipe du complexe et horaires : le gérant la tient à jour
+    match /personnel/{id} {
+      allow read: if staff();
+      allow write: if gerant();
     }
   }
 }

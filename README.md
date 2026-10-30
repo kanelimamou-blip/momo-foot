@@ -9,8 +9,15 @@ En ligne : https://kanelimamou-blip.github.io/momo-foot/
 ## Fichiers
 
 - `docs/config.js` : tout ce qui change d'un complexe à l'autre (nom, terrains, horaires, tarifs, acompte, numéros Wave et WhatsApp, clés d'entrée, photos). C'est le seul fichier à adapter pour revendre l'appli.
-- `docs/app.js` : l'appli. Sans `FIREBASE_CONFIG`, les données restent sur le téléphone et l'appli démarre avec des données de démo.
+- `docs/app.js` : l'appli. Avec Firebase, tout est en ligne et partagé en temps réel entre les téléphones ; sans `FIREBASE_CONFIG`, les données restent sur le téléphone. Plus de données de démo : l'appli démarre vide.
 - `docs/app.css`, `docs/index.html`, `docs/manifest.webmanifest`, `docs/sw.js` (hors connexion).
+
+## Données en ligne (Firestore)
+
+- `creneaux/{date_heure_terrain}` : réservations, défis et sessions « Je veux jouer ». Un document par créneau, donc deux téléphones ne prennent jamais le même. Un joueur réserve « en attente d'acompte » ; le gérant valide l'acompte. Après 15 min sans acompte, le créneau se libère. Les sessions automatiques de la semaine (`config.sessions.auto`) s'affichent seules et se créent à la première inscription ; chaque joueur n'ajoute ou ne retire que sa propre ligne, et seul le personnel coche « payé ».
+- `equipes`, `resultats` (scores publiés par le personnel, qui met à jour le classement), `annonces` (« il manque des joueurs »), `dispos/{uid}`.
+- Réservé au personnel : `caisse` (reçus numérotés, jamais effacés, numéro suivi dans `meta/caisse`), `personnel`, `contacts` (téléphone de la réservation), `abonnes/{uid}` (le joueur signale son paiement Wave, le gérant active 30 jours).
+- Gérant et personnel : le compte est créé dans l'appli, puis l'admin choisit son rôle dans `#admin`. Un client ne peut pas se donner ce rôle.
 
 ## Comptes et espace admin
 
@@ -20,12 +27,12 @@ En ligne : https://kanelimamou-blip.github.io/momo-foot/
 
 Pas de paiement de licence dans l'appli ni de blocage automatique : le propriétaire encaisse les abonnements lui-même. Les paiements Wave des joueurs (acomptes, places en session, abonnement joueur) sont ceux du complexe et ne bloquent rien.
 
-Tests (émulateurs Firebase) : `npm run test:regles` (34 cas sur les règles) et `tests/e2e.cjs` (22 vérifications de bout en bout : connexion admin, liste, erreur remontée, suspension, client qui ne lit pas les erreurs et ne se réactive pas, vue d'un client en lecture seule, passage d'un rôle à l'autre en présentation).
+Tests (émulateurs Firebase) : `npm run test:regles` (97 cas sur les règles) et `tests/e2e.cjs` (30 vérifications de bout en bout sur deux téléphones : réservation vue en direct, inscription à une session, rôle gérant donné par l'admin, acompte validé, connexion admin, liste, erreur remontée, suspension, vue d'un client en lecture seule, présentation).
 
-## Clés de démo
+## Sans Firebase
 
-Gérant : `DIR-DEMO`. Personnel : `PERS-DEMO`.
+Clés d'entrée du gérant et du personnel dans `config.cles`.
 
 ## À venir
 
-Planning et sessions partagés en temps réel entre tous les téléphones (Firestore), vraies photos et logo, rappels WhatsApp la veille, tournois.
+Vraies photos et logo, rappels WhatsApp la veille, tournois.

@@ -1,7 +1,7 @@
 // Tests des règles Firestore sur l'émulateur : npm run test:regles
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
 import { readFileSync } from "fs";
-import { doc, setDoc, getDoc, updateDoc, getDocs, collection, addDoc, deleteDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, getDoc, updateDoc, getDocs, collection, addDoc, deleteDoc, serverTimestamp, deleteField, runTransaction } from "firebase/firestore";
 
 const rules = readFileSync(new URL("../firestore.rules", import.meta.url), "utf8").replace(/request\.auth\.uid in \[[^\]]*\]/, "request.auth.uid in ['ADMIN1']");
 const env = await initializeTestEnvironment({ projectId: "demo-regles", firestore: { rules, host: "127.0.0.1", port: 8080 } });
@@ -35,6 +35,7 @@ await t("une ancienne fiche (sans téléphone ni activité) compte ses actions",
 await t("admin liste les comptes", assertSucceeds(getDocs(collection(adm, "users"))));
 await t("admin lit n'importe quel document", assertSucceeds(getDoc(doc(adm, "autre/x"))));
 await t("admin suspend bob", assertSucceeds(updateDoc(doc(adm, "users/bob"), { active: false })));
+await t("client ne se crée pas gérant", assertFails(setDoc(doc(env.authenticatedContext("zed").firestore(), "users/zed"), { ...fresh("Zed"), role: "gerant" })));
 await t("admin ne modifie rien d'autre que la suspension", assertFails(updateDoc(doc(adm, "users/ali"), { name: "x" })));
 await t("admin n'écrit nulle part ailleurs", assertFails(setDoc(doc(adm, "autre/x"), { a: 1 })));
 await t("compte suspendu ne peut plus rien enregistrer", assertFails(updateDoc(doc(bob, "users/bob"), { name: "Bob", lastSeen: serverTimestamp() })));
@@ -53,6 +54,83 @@ await t("admin lit les erreurs (" + snap.size + ")", Promise.resolve(snap.size =
 await t("client n'efface pas une erreur", assertFails(deleteDoc(doc(ali, "erreurs/" + snap.docs[0].id))));
 await t("admin efface une erreur", assertSucceeds(deleteDoc(doc(adm, "erreurs/" + snap.docs[0].id))));
 await t("autre collection fermée aux clients", assertFails(setDoc(doc(ali, "autre/x"), { a: 1 })));
+/* ---------- Données de l'appli ---------- */
+await t("client passe capitaine", assertSucceeds(updateDoc(doc(ali, "users/ali"), { role: "capitaine", equipe: "t1", lastSeen: serverTimestamp() })));
+await t("client ne se donne pas le rôle gérant", assertFails(updateDoc(doc(ali, "users/ali"), { role: "gerant", lastSeen: serverTimestamp() })));
+const gg = env.authenticatedContext("gege").firestore();
+await setDoc(doc(gg, "users/gege"), fresh("Gégé"));
+await t("admin donne le rôle gérant", assertSucceeds(updateDoc(doc(adm, "users/gege"), { role: "gerant" })));
+await t("le gérant garde son rôle en changeant son profil", assertSucceeds(updateDoc(doc(gg, "users/gege"), { name: "Gégé M.", role: "gerant", lastSeen: serverTimestamp() })));
+const K = "2030-01-07", bk = (o = {}) => ({ date: K, hour: 20, terrain: 0, team: "Lions", teamId: "t1", opponent: "", opponentId: "", type: "defi", niveau: "Moyen", price: 25000, status: "attente", by: "ali", createdAt: serverTimestamp(), ...o });
+await t("visiteur voit le planning", assertSucceeds(getDocs(collection(anon, "creneaux"))));
+await t("visiteur ne réserve pas", assertFails(setDoc(doc(anon, `creneaux/${K}_20_0`), bk())));
+await t("client réserve un créneau (en attente d'acompte)", assertSucceeds(setDoc(doc(ali, `creneaux/${K}_20_0`), bk())));
+await t("le nom du document doit être le créneau", assertFails(setDoc(doc(ali, `creneaux/${K}_21_0`), bk())));
+await t("client ne se met pas « payé » tout seul", assertFails(setDoc(doc(ali, `creneaux/${K}_21_0`), bk({ hour: 21, status: "confirme" }))));
+await t("client ne réserve pas au nom d'un autre", assertFails(setDoc(doc(ali, `creneaux/${K}_21_0`), bk({ hour: 21, by: "bob" }))));
+await t("un créneau pris ne se reprend pas", assertFails(setDoc(doc(bob, `creneaux/${K}_20_0`), bk({ by: "bob" }))));
+await t("transaction : le second téléphone est refusé", runTransaction(bob, async (tx) => { const r = doc(bob, `creneaux/${K}_20_0`); if ((await tx.get(r)).exists()) throw new Error("pris"); tx.set(r, bk({ by: "bob" })); }).then(() => Promise.reject(new Error("pas refusé")), (e) => (e.message === "pris" ? 1 : Promise.reject(e))));
+await t("client ne valide pas son acompte", assertFails(updateDoc(doc(ali, `creneaux/${K}_20_0`), { status: "confirme" })));
+await t("bob relève le défi", assertSucceeds(updateDoc(doc(bob, `creneaux/${K}_20_0`), { opponent: "Galaxy", opponentId: "t2", opBy: "bob" })));
+await t("un défi relevé ne se reprend pas", assertFails(updateDoc(doc(ali, `creneaux/${K}_20_0`), { opponent: "Autre", opponentId: "t3", opBy: "ali" })));
+await t("le gérant valide l'acompte", assertSucceeds(updateDoc(doc(gg, `creneaux/${K}_20_0`), { status: "confirme" })));
+await t("bob n'annule pas la réservation d'Ali", assertFails(deleteDoc(doc(bob, `creneaux/${K}_20_0`))));
+await t("client donne son téléphone pour sa réservation", assertSucceeds(setDoc(doc(ali, `contacts/${K}_20_0`), { phone: "77 1", name: "Ali", by: "ali" })));
+await t("téléphone sur la réservation d'un autre refusé", assertFails(setDoc(doc(bob, `contacts/${K}_20_0`), { phone: "77 2", name: "Bob", by: "bob" })));
+await t("un client ne lit pas les téléphones", assertFails(getDocs(collection(bob, "contacts"))));
+await t("le gérant lit les téléphones", assertSucceeds(getDocs(collection(gg, "contacts"))));
+await t("Ali annule sa réservation", assertSucceeds(deleteDoc(doc(ali, `creneaux/${K}_20_0`))));
+await env.withSecurityRulesDisabled((c) => setDoc(doc(c.firestore(), `creneaux/${K}_10_1`), { ...bk({ hour: 10, terrain: 1, by: "zoe" }), createdAt: new Date(Date.now() - 20 * 6e4) }));
+await env.withSecurityRulesDisabled((c) => setDoc(doc(c.firestore(), `creneaux/${K}_11_1`), { ...bk({ hour: 11, terrain: 1, by: "zoe" }), createdAt: new Date(Date.now() - 5 * 6e4) }));
+await t("un créneau en attente depuis 20 min est libéré par n'importe qui", assertSucceeds(deleteDoc(doc(bob, `creneaux/${K}_10_1`))));
+await t("pas avant 15 min", assertFails(deleteDoc(doc(bob, `creneaux/${K}_11_1`))));
+// Sessions « Je veux jouer »
+const S1 = `creneaux/${K}_18_1`, pl = (name, o = {}) => ({ name, poste: "Milieu", paid: false, abonne: false, at: 1, ...o });
+const sess = (players) => ({ date: K, hour: 18, terrain: 1, team: "Session joueurs seuls", teamId: "", opponent: "", opponentId: "", type: "session", niveau: "Tous niveaux", status: "confirme", by: "", players, createdAt: serverTimestamp() });
+await t("on n'ouvre pas une session avec d'autres joueurs dedans", assertFails(setDoc(doc(ali, S1), sess({ ali: pl("Ali"), bob: pl("Bob") }))));
+await t("Ali ouvre la session en s'inscrivant", assertSucceeds(setDoc(doc(ali, S1), sess({ ali: pl("Ali") }))));
+await t("Bob s'inscrit", assertSucceeds(updateDoc(doc(bob, S1), { "players.bob": pl("Bob") })));
+await t("Bob ne désinscrit pas Ali", assertFails(updateDoc(doc(bob, S1), { "players.ali": deleteField() })));
+await t("Bob ne se met pas « payé »", assertFails(updateDoc(doc(bob, S1), { "players.bob.paid": true })));
+await t("Bob ne se dit pas abonné sans abonnement", assertFails(updateDoc(doc(bob, S1), { "players.bob": pl("Bob", { abonne: true }) })));
+await t("le gérant coche la place payée", assertSucceeds(updateDoc(doc(gg, S1), { "players.bob.paid": true })));
+await t("Bob se désinscrit", assertSucceeds(updateDoc(doc(bob, S1), { "players.bob": deleteField() })));
+await t("personne ne supprime une session sauf le personnel", assertFails(deleteDoc(doc(ali, S1))));
+// Abonnement
+await t("Bob signale son paiement d'abonnement", assertSucceeds(setDoc(doc(bob, "abonnes/bob"), { name: "Bob", status: "demande", at: serverTimestamp() })));
+await t("Bob ne s'active pas lui-même", assertFails(setDoc(doc(bob, "abonnes/bob"), { name: "Bob", status: "actif", at: serverTimestamp() })));
+await t("Ali ne lit pas l'abonnement de Bob", assertFails(getDoc(doc(ali, "abonnes/bob"))));
+await t("le gérant active 30 jours", assertSucceeds(updateDoc(doc(gg, "abonnes/bob"), { status: "actif", until: new Date(Date.now() + 30 * 864e5) })));
+await t("abonné, Bob paie le tarif abonné", assertSucceeds(updateDoc(doc(bob, S1), { "players.bob": pl("Bob", { abonne: true }) })));
+// Équipes, scores, annonces, dispos
+await t("client crée son équipe", assertSucceeds(setDoc(doc(ali, "equipes/t9"), { name: "Lions", captain: "Ali", color: "#12704A", elo: 1050, w: 0, d: 0, l: 0, gf: 0, ga: 0, by: "ali" })));
+await t("client ne se donne pas de points", assertFails(updateDoc(doc(ali, "equipes/t9"), { elo: 2000 })));
+await t("équipe créée avec des points refusée", assertFails(setDoc(doc(ali, "equipes/t8"), { name: "X", captain: "Ali", color: "#000", elo: 1900, w: 9, d: 0, l: 0, gf: 0, ga: 0, by: "ali" })));
+await t("le gérant met à jour le classement", assertSucceeds(updateDoc(doc(gg, "equipes/t9"), { elo: 1066, w: 1, gf: 5, ga: 3 })));
+const res = { date: K, hour: 20, a: "Lions", b: "Galaxy", sa: 5, sb: 3, motm: "Ali", at: serverTimestamp() };
+await t("client ne publie pas de score", assertFails(addDoc(collection(ali, "resultats"), res)));
+await t("le gérant publie le score", assertSucceeds(addDoc(collection(gg, "resultats"), res)));
+const an = { bookingId: "x", team: "Lions", date: K, hour: 20, terrain: 0, missing: 2, poste: "Gardien", joined: {}, by: "ali", at: serverTimestamp() };
+await t("Ali publie une annonce", assertSucceeds(setDoc(doc(ali, "annonces/a1"), an)));
+await t("Bob répond « je viens »", assertSucceeds(updateDoc(doc(bob, "annonces/a1"), { "joined.bob": "Bob" })));
+await t("Bob n'inscrit pas quelqu'un d'autre", assertFails(updateDoc(doc(bob, "annonces/a1"), { "joined.zoe": "Zoé" })));
+await t("Bob ne change pas l'annonce", assertFails(updateDoc(doc(bob, "annonces/a1"), { missing: 5 })));
+await t("Ali met ses dispos", assertSucceeds(setDoc(doc(ali, "dispos/ali"), { name: "Ali", poste: "Milieu", slots: ["1-20", "3-21"] })));
+await t("Ali ne touche pas aux dispos de Bob", assertFails(setDoc(doc(ali, "dispos/bob"), { name: "Bob", poste: "Milieu", slots: [] })));
+// Caisse et personnel
+await t("client ne lit pas la caisse", assertFails(getDocs(collection(ali, "caisse"))));
+await t("client n'écrit pas de reçu", assertFails(addDoc(collection(ali, "caisse"), { n: 1, date: K, hour: 20, team: "Lions", amount: 25000, by: "Wave", at: serverTimestamp(), staff: "ali" })));
+await t("le gérant encaisse (reçu numéroté)", assertSucceeds(runTransaction(gg, async (tx) => { const m = doc(gg, "meta/caisse"), s = await tx.get(m), n = (s.exists() && s.data().next) || 1; tx.set(m, { next: n + 1 }); tx.set(doc(collection(gg, "caisse")), { n, date: K, hour: 20, team: "Lions", amount: 25000, by: "Wave", at: serverTimestamp(), staff: "gege" }); })));
+await t("un reçu ne s'efface pas", getDocs(collection(gg, "caisse")).then((q) => assertFails(deleteDoc(q.docs[0].ref))));
+await t("le gérant ajoute du personnel", assertSucceeds(addDoc(collection(gg, "personnel"), { name: "Fatou", role: "Caisse", shift: "17h" })));
+await t("client ne lit pas le personnel", assertFails(getDocs(collection(ali, "personnel"))));
+await t("admin lit la caisse (vue d'un gérant)", assertSucceeds(getDocs(collection(adm, "caisse"))));
+await t("admin n'écrit pas dans le planning", assertFails(setDoc(doc(adm, `creneaux/${K}_22_0`), bk({ hour: 22, by: "ADMIN1" }))));
+await updateDoc(doc(adm, "users/ali"), { active: false });
+await t("client suspendu ne réserve plus", assertFails(setDoc(doc(ali, `creneaux/${K}_23_0`), bk({ hour: 23 }))));
+await t("client suspendu ne s'inscrit plus aux sessions", assertFails(updateDoc(doc(ali, S1), { "players.ali": deleteField() })));
+await updateDoc(doc(adm, "users/gege"), { active: false });
+await t("gérant suspendu n'encaisse plus", assertFails(updateDoc(doc(gg, S1), { "players.bob.paid": true })));
 console.log(`\n${n - bad}/${n} tests passés`);
 await env.cleanup();
 process.exit(bad ? 1 : 0);

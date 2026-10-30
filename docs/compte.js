@@ -1,6 +1,6 @@
 "use strict";
 // Comptes clients : connexion Google ou e-mail (Firebase Auth), fiche de chaque compte et erreurs remontées (Firestore).
-// users/{uid}   nom, e-mail, téléphone, quartier, rôle, poste, inscription et dernière activité (heure du serveur),
+// users/{uid}   nom, e-mail, téléphone, quartier, rôle, poste, équipe, inscription et dernière activité (heure du serveur),
 //               activite (nombre d'actions par jour, 14 derniers jours), active (false = suspendu par l'admin)
 // erreurs/{id}  plantages et écritures refusées : message, écran, compte, rôle, téléphone (lues par l'admin seulement)
 // Sans FIREBASE_CONFIG dans config.js, l'appli garde le fonctionnement local (Compte.enabled = false).
@@ -33,7 +33,7 @@ const Compte = (() => {
     return user ? profile() : null;
   }
 
-  const shape = (uid, d) => ({ uid, name: d.name || "", email: d.email || "", tel: d.tel || "", quartier: d.quartier || "", role: d.role || "joueur", poste: d.poste || "",
+  const shape = (uid, d) => ({ uid, name: d.name || "", email: d.email || "", tel: d.tel || "", quartier: d.quartier || "", role: d.role || "joueur", poste: d.poste || "", equipe: d.equipe || "",
     active: d.active !== false, created: d.created && d.created.toDate ? d.created.toDate() : null, lastSeen: d.lastSeen && d.lastSeen.toDate ? d.lastSeen.toDate() : null, activite: d.activite || {} });
 
   async function profile() {
@@ -72,10 +72,11 @@ const Compte = (() => {
   const resetPassword = (email) => auth.sendPasswordResetEmail(email);
   async function signOut() { if (auth) await auth.signOut(); user = null; doc = null; }
 
-  // Le client change son nom, son téléphone, son quartier, son rôle et son poste ; jamais son statut ni sa date d'inscription
+  // Le client change son nom, son téléphone, son quartier, son poste, son équipe, et passe de joueur à capitaine ;
+  // jamais son statut, sa date d'inscription ni un rôle du personnel (donné par l'admin)
   function saveProfile(p) {
     if (!user || !db) return Promise.resolve();
-    const data = { name: p.name, tel: p.tel || "", quartier: p.quartier || "", role: ROLES.includes(p.role) ? p.role : "joueur", poste: p.poste || "", lastSeen: ts() };
+    const data = { name: p.name, tel: p.tel || "", quartier: p.quartier || "", role: ROLES.includes(p.role) ? p.role : "joueur", poste: p.poste || "", equipe: p.equipe || "", lastSeen: ts() };
     return db.collection("users").doc(user.uid).update(data)
       .then(() => { Object.assign(doc, data); }, (e) => { logError("refus", e.message, "profil"); throw e; });
   }
@@ -118,9 +119,10 @@ const Compte = (() => {
     errors: (sinceMs) => db.collection("erreurs").where("at", ">=", new Date(sinceMs)).orderBy("at", "desc").limit(100).get()
       .then((s) => s.docs.map((d) => ({ id: d.id, ...d.data(), at: d.data().at && d.data().at.toDate ? d.data().at.toDate() : null }))),
     setActive: (uid, active) => db.collection("users").doc(uid).update({ active }),
+    setRole: (uid, role) => db.collection("users").doc(uid).update({ role }),
     deleteError: (id) => db.collection("erreurs").doc(id).delete(),
   };
 
-  return { enabled, emu, start, signIn, signInEmail, resetPassword, signOut, saveProfile, track, logError, isAdmin, admin, setRole(fn) { roleNow = fn; },
+  return { enabled, emu, start, db: () => db, signIn, signInEmail, resetPassword, signOut, saveProfile, track, logError, isAdmin, admin, setRole(fn) { roleNow = fn; },
     get user() { return user; }, get ready() { return ready; } };
 })();
