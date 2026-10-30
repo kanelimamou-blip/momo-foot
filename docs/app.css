@@ -271,3 +271,6 @@ textarea.input { padding: 10px 12px; min-height: 80px; }
 .modebar .wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-block: 6px; }
 .modebar .iconbtn { margin-left: auto; width: 30px; height: 30px; font-size: 1.1rem; }
 .modebar .fchip[aria-pressed="true"] { background: var(--on-bib); color: var(--bib); border-color: var(--on-bib); }
+
+/* Choix du rôle dans l'espace admin */
+.input-sm { width: auto; min-height: 34px; padding: 4px 8px; font-size: 14px; }
