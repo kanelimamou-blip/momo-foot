@@ -33,7 +33,7 @@ const Compte = (() => {
     return user ? profile() : null;
   }
 
-  const shape = (uid, d) => ({ uid, name: d.name || "", email: d.email || "", tel: d.tel || "", quartier: d.quartier || "", role: d.role || "joueur", poste: d.poste || "", equipe: d.equipe || "",
+  const shape = (uid, d) => ({ uid, name: d.name || "", email: d.email || "", tel: d.tel || "", quartier: d.quartier || "", role: d.role || "joueur", poste: d.poste || "", equipe: d.equipe || "", source: d.source || "", accord: d.accord === true,
     active: d.active !== false, created: d.created && d.created.toDate ? d.created.toDate() : null, lastSeen: d.lastSeen && d.lastSeen.toDate ? d.lastSeen.toDate() : null, activite: d.activite || {} });
 
   async function profile() {
@@ -72,11 +72,12 @@ const Compte = (() => {
   const resetPassword = (email) => auth.sendPasswordResetEmail(email);
   async function signOut() { if (auth) await auth.signOut(); user = null; doc = null; }
 
-  // Le client change son nom, son téléphone, son quartier, son poste, son équipe, et passe de joueur à capitaine ;
+  // Le client change son nom, son téléphone, son quartier, son poste, son équipe, d'où il a connu le complexe, son accord
+  // pour les messages WhatsApp, et passe de joueur à capitaine ;
   // jamais son statut, sa date d'inscription ni un rôle du personnel (donné par l'admin)
   function saveProfile(p) {
     if (!user || !db) return Promise.resolve();
-    const data = { name: p.name, tel: p.tel || "", quartier: p.quartier || "", role: ROLES.includes(p.role) ? p.role : "joueur", poste: p.poste || "", equipe: p.equipe || "", lastSeen: ts() };
+    const data = { name: p.name, tel: p.tel || "", quartier: p.quartier || "", role: ROLES.includes(p.role) ? p.role : "joueur", poste: p.poste || "", equipe: p.equipe || "", source: p.source || "", accord: !!p.accord, lastSeen: ts() };
     return db.collection("users").doc(user.uid).update(data)
       .then(() => { Object.assign(doc, data); }, (e) => { logError("refus", e.message, "profil"); throw e; });
   }

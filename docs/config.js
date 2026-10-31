@@ -21,6 +21,7 @@ window.MOMO_CONFIG = {
     creuse: 15000, // avant heurePleine, du lundi au vendredi
     pleine: 25000, // à partir de heurePleine et tout le week-end
     heurePleine: 19, // = ouverture : tout le soir au tarif plein, à ajuster dans Réglages
+    afterwork: 15000, // premier créneau du soir en semaine (0 = pas d'afterwork)
     devise: "F CFA",
   },
   acompte: 5000,

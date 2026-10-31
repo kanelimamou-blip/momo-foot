@@ -166,6 +166,13 @@ await t("le gérant change les prix", assertSucceeds(setDoc(doc(g2, "reglages/ta
 await t("l'arbitre ne change pas les prix", assertFails(setDoc(doc(arb, "reglages/tarifs"), TAR)));
 await t("prix incohérents refusés (moins de joueurs au plus qu'au minimum)", assertFails(setDoc(doc(own, "reglages/tarifs"), { ...TAR, maxJoueurs: 10 })));
 await t("un visiteur lit les prix", assertSucceeds(getDoc(doc(anon, "reglages/tarifs"))));
+await t("le gérant met un prix afterwork", assertSucceeds(setDoc(doc(g2, "reglages/tarifs"), { ...TAR, afterwork: 15000 })));
+await t("prix afterwork négatif refusé", assertFails(setDoc(doc(g2, "reglages/tarifs"), { ...TAR, afterwork: -1 })));
+await t("la caissière lance une session à 10", assertSucceeds(updateDoc(doc(cai, S1), { min: 10 })));
+await t("un seuil de session absurde est refusé", assertFails(updateDoc(doc(cai, S1), { min: 1 })));
+await t("un joueur ne lance pas la session à 2", assertFails(updateDoc(doc(jo, S1), { min: 2 })));
+await t("un joueur dit d'où il a connu le complexe et accepte les messages", assertSucceeds(updateDoc(doc(jo, "users/jo"), { source: "Un ami", accord: true, lastSeen: serverTimestamp() })));
+await t("accord pour les messages : oui ou non seulement", assertFails(updateDoc(doc(jo, "users/jo"), { accord: "oui", lastSeen: serverTimestamp() })));
 await setDoc(doc(own, "reglages/roles"), { roles: { caissier: ROLES.caissier, arbitre: ROLES.arbitre } });
 await t("rôle supprimé par le propriétaire : le gérant perd ses droits", assertFails(setDoc(doc(g2, "reglages/tarifs"), TAR)));
 console.log(`\n${n - bad}/${n} tests passés`);
