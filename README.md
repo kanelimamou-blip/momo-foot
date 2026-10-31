@@ -34,11 +34,21 @@ Le planning s'ouvre sur un calendrier en carreaux (un mois, jusqu'à 120 jours �
 
 Pas de paiement de licence dans l'appli ni de blocage automatique : le propriétaire encaisse les abonnements lui-même. Les paiements Wave des joueurs (acomptes, places en session, abonnement joueur) sont ceux du complexe et ne bloquent rien.
 
-Tests (émulateurs Firebase) : `npm run test:regles` (126 cas sur les règles) et `tests/e2e.cjs` (35 vérifications de bout en bout sur deux téléphones : réservation vue en direct, inscription à une session, propriétaire nommé par l'admin, prix changé et vu en direct, rôle créé et donné à un membre, acompte validé, connexion admin, liste, erreur remontée, suspension, vue d'un client en lecture seule, présentation).
+Tests (émulateurs Firebase) : `npm run test:regles` (133 cas sur les règles) et `tests/e2e.cjs` (35 vérifications de bout en bout sur deux téléphones : réservation vue en direct, inscription à une session, propriétaire nommé par l'admin, prix changé et vu en direct, rôle créé et donné à un membre, acompte validé, connexion admin, liste, erreur remontée, suspension, vue d'un client en lecture seule, présentation).
 
 ## Sans Firebase
 
 Clés d'entrée du gérant et du personnel dans `config.cles`.
+
+## Faire venir du monde
+
+Dans Gestion, l'appli écrit les messages WhatsApp et choisit le numéro ; le personnel n'a plus qu'à appuyer sur Envoyer :
+
+- **Relances WhatsApp** (droit Planning) : rappel la veille pour chaque réservation (au téléphone de la réservation) et chaque session (au groupe des joueurs), relance « il manque X » pour les sessions des 3 prochains jours, et bouton « Lancer à 10 » quand une session a au moins `minJoueurs - 2` inscrits (champ `min` du créneau, au lieu d'annuler).
+- **Clients à relancer** (droit Membres) : joueurs qui n'ont pas ouvert l'appli depuis 30 jours, avec un message « tu nous manques » qui offre une place au prix abonné. Les joueurs qui ont refusé les messages n'y sont pas.
+- **Images pour les statuts** : créneaux libres ce soir, programme de la semaine, score d'un match, en 1080 × 1350 avec le QR code de l'appli.
+- **Afterwork** : le premier créneau du soir en semaine a son propre prix (`tarifs.afterwork`, modifiable dans Réglages, 0 = sans).
+- **Profil** : « Comment avez-vous connu Momo Foot ? » et accord pour les messages WhatsApp (`users.source`, `users.accord`), résumés dans `#admin`.
 
 ## À venir
 

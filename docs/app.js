@@ -7,6 +7,8 @@
   const JOURS_LONG = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
   const MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
   const POSTES = ["Gardien", "Défenseur", "Milieu", "Attaquant"];
+  // « Comment avez-vous connu le complexe ? » : pour savoir quelle action fait venir du monde
+  const SOURCES = ["Un ami", "WhatsApp", "Instagram ou TikTok", "Affiche ou QR code", "En passant devant", "Un tournoi", "Autre"];
   const SOIR = [18, 19, 20, 21, 22, 23].filter((h) => h >= C.ouverture && h < C.fermeture);
   const COULEURS = ["#12704A", "#E9601A", "#2C5BD6", "#B8232F", "#7A3FC2", "#C79A00", "#0E8C8C", "#3E4A44"];
 
@@ -30,7 +32,9 @@
   const initials = (n) => String(n || "?").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   const hours = () => { const a = []; for (let h = C.ouverture; h < C.fermeture; h++) a.push(h); return a; };
   const isWeekend = (k) => [0, 6].includes(fromKey(k).getDay());
-  const price = (k, h) => (isWeekend(k) || h >= C.tarifs.heurePleine ? C.tarifs.pleine : C.tarifs.creuse);
+  // Afterwork : le premier créneau du soir en semaine, à son propre prix (0 = pas d'afterwork)
+  const isAfterwork = (k, h) => !isWeekend(k) && h === C.ouverture && C.tarifs.afterwork > 0;
+  const price = (k, h) => (isAfterwork(k, h) ? C.tarifs.afterwork : isWeekend(k) || h >= C.tarifs.heurePleine ? C.tarifs.pleine : C.tarifs.creuse);
   const isPast = (k, h) => { const d = fromKey(k); d.setHours(h, 0, 0, 0); return d < new Date(); };
   const waLink = (text, num) => `https://wa.me/${num || ""}?text=${encodeURIComponent(text)}`;
   const APP_URL = C.urlAppli || location.href.split("#")[0];
@@ -143,7 +147,7 @@
     const abo = R.abonnes[me];
     const bookings = Object.entries(R.creneaux).filter(([, b]) => !(b.status === "attente" && b.createdAt < lim)).map(([id, b]) => {
       const players = Object.entries(b.players || {}).map(([u, p]) => ({ uid: u, ...p })).sort((x, y) => (x.at || 0) - (y.at || 0));
-      const x = { ...b, id, players, mine: !!b.by && b.by === me, opponentMine: !!b.opBy && b.opBy === me, phone: (R.contacts[id] || {}).phone || "" };
+      const x = { ...b, id, players, mine: !!b.by && b.by === me, opponentMine: !!b.opBy && b.opBy === me, phone: (R.contacts[id] || {}).phone || "", cname: (R.contacts[id] || {}).name || "" };
       if (b.type === "session") x.price = sessionTotal(x);
       return x;
     });
@@ -285,13 +289,13 @@
 
   /* ---------- Prix modifiables ---------- */
   // config.js donne les prix de départ ; le propriétaire (ou un rôle avec le droit Prix) les change dans les réglages
-  const TARIFS = [["creuse", "Créneau heures creuses", "F"], ["pleine", "Créneau heures pleines et week-end", "F"], ["heurePleine", "Début des heures pleines", "h"], ["acompte", "Acompte pour bloquer un créneau", "F"],
+  const TARIFS = [["creuse", "Créneau heures creuses", "F"], ["pleine", "Créneau heures pleines et week-end", "F"], ["heurePleine", "Début des heures pleines", "h"], ["afterwork", "Afterwork : premier créneau en semaine (0 = sans)", "F"], ["acompte", "Acompte pour bloquer un créneau", "F"],
     ["prixJoueur", "Session : place joueur", "F"], ["prixAbonne", "Session : place abonné", "F"], ["abonnementMois", "Abonnement joueur par mois", "F"], ["minJoueurs", "Session : joueurs pour lancer le match", ""], ["maxJoueurs", "Session : joueurs au plus", ""]];
-  const BASE_T = { creuse: C.tarifs.creuse, pleine: C.tarifs.pleine, heurePleine: C.tarifs.heurePleine, acompte: C.acompte, prixJoueur: C.sessions.prixJoueur, prixAbonne: C.sessions.prixAbonne,
+  const BASE_T = { creuse: C.tarifs.creuse, pleine: C.tarifs.pleine, heurePleine: C.tarifs.heurePleine, afterwork: C.tarifs.afterwork || 0, acompte: C.acompte, prixJoueur: C.sessions.prixJoueur, prixAbonne: C.sessions.prixAbonne,
     abonnementMois: C.sessions.abonnementMois, minJoueurs: C.sessions.minJoueurs, maxJoueurs: C.sessions.maxJoueurs };
   function applyTarifs(t) {
     const x = { ...BASE_T, ...(t || {}) };
-    Object.assign(C.tarifs, { creuse: x.creuse, pleine: x.pleine, heurePleine: x.heurePleine });
+    Object.assign(C.tarifs, { creuse: x.creuse, pleine: x.pleine, heurePleine: x.heurePleine, afterwork: x.afterwork || 0 });
     C.acompte = x.acompte;
     Object.assign(C.sessions, { prixJoueur: x.prixJoueur, prixAbonne: x.prixAbonne, abonnementMois: x.abonnementMois, minJoueurs: x.minJoueurs, maxJoueurs: x.maxJoueurs });
   }
@@ -503,7 +507,7 @@
     if (isPast(k, h)) return `<div class="slot taken past"><b>${b ? esc(b.team) : "-"}</b><span>terminé</span></div>`;
     if (!b) return `<button class="slot free" data-book="${k}|${h}|${ti}"><b class="num">${money(price(k, h))}</b><span>Libre</span></button>`;
     const mine = b.mine ? " mine" : "";
-    if (b.type === "session") return `<button class="slot sess${b.players.some((p) => p.uid === myId()) ? " mine" : ""}" data-sess="${b.id}"><b>Je veux jouer</b><span class="num">${b.players.length}/${C.sessions.minJoueurs} inscrits</span></button>`;
+    if (b.type === "session") return `<button class="slot sess${b.players.some((p) => p.uid === myId()) ? " mine" : ""}" data-sess="${b.id}"><b>Je veux jouer</b><span class="num">${b.players.length}/${sMin(b)} inscrits</span></button>`;
     if (b.type === "defi" && !b.opponent) return `<button class="slot defi${mine}" data-defi="${b.id}"><b>${esc(b.team)}</b><span>cherche adversaire</span></button>`;
     if (b.status === "attente") return `<div class="slot hold${mine}"><b>${esc(b.team)}</b><span>attente acompte</span></div>`;
     return `<div class="slot taken${mine}"><b>${esc(b.team)}</b><span>${b.opponent ? "vs " + esc(b.opponent) : "match privé"}</span></div>`;
@@ -722,9 +726,11 @@
   const openSessions = () => S.bookings.filter((b) => b.type === "session" && !isPast(b.date, b.hour)).sort((a, b) => (a.date + pad(a.hour)).localeCompare(b.date + pad(b.hour)));
   const entry = () => ({ name: S.me.name, poste: S.me.poste, paid: false, abonne: S.me.abonne, at: Date.now() });
   const myPrice = () => (S.me.abonne ? C.sessions.prixAbonne : C.sessions.prixJoueur);
+  // Joueurs pour lancer une session : le réglage du complexe, ou moins si le personnel l'a lancée plus tôt (« Lancer à 10 »)
+  const sMin = (b) => b.min || C.sessions.minJoueurs;
 
   function sessionCard(b) {
-    const n = b.players.length, min = C.sessions.minJoueurs, max = C.sessions.maxJoueurs;
+    const n = b.players.length, min = sMin(b), max = C.sessions.maxJoueurs;
     const me = b.players.some((p) => p.uid === myId());
     const chip = n >= max ? '<span class="chip chip-n">Complet</span>' : n >= min ? '<span class="chip chip-ok">On joue !</span>' : `<span class="chip chip-bib">Il manque ${min - n}</span>`;
     return `<div class="card">
@@ -758,20 +764,20 @@
     const ref = "MS-" + b.id.slice(0, 4).toUpperCase();
     const msg = `Bonjour ${C.nomCourt}, je suis inscrit à la session du ${dayLabel(b.date).toLowerCase()} à ${hh(b.hour)}. ${money(myPrice())} envoyés par Wave, référence ${ref}. ${S.me.name}`;
     sheet(`${head("Session joueurs seuls", `${dayLabel(b.date)} · ${hh(b.hour)} · ${esc(C.terrains[b.terrain])}`)}
-      <div class="meter"><i style="width:${Math.min(100, (b.players.length / C.sessions.minJoueurs) * 100)}%"></i></div>
-      <p class="small"><b class="num">${b.players.length}/${C.sessions.minJoueurs}</b> inscrits. ${byPoste}</p>
+      <div class="meter"><i style="width:${Math.min(100, (b.players.length / sMin(b)) * 100)}%"></i></div>
+      <p class="small"><b class="num">${b.players.length}/${sMin(b)}</b> inscrits. ${byPoste}</p>
       <div class="list small">${[...b.players].sort((x, y) => order[x.poste] - order[y.poste]).map((p) => `<div class="row"><span class="avatars"><i>${initials(p.name)}</i></span><span class="grow">${esc(p.name)}${p.uid === myId() ? " (vous)" : ""}${p.abonne ? ' <span class="chip chip-n">abonné</span>' : ""}</span><span class="muted">${esc(p.poste)}</span>${p.paid ? '<span class="chip chip-ok">payé</span>' : staff ? `<button class="btn btn-turf btn-sm" data-ppaid="${esc(p.uid)}">Encaissé</button>` : '<span class="chip chip-warn">à payer</span>'}</div>`).join("")}</div>
       ${me ? `${me.paid ? "" : `<div class="pay"><span class="label">Votre place</span><span class="big num">${money(myPrice())}</span><div class="copybox"><code>${esc(C.wave)}</code><button class="btn btn-ghost btn-sm" data-copy="${esc(C.wave)}" data-done="Numéro Wave copié">Copier</button></div><p class="small">Référence Wave : <b>${ref}</b></p></div>
         <a class="btn btn-turf btn-block" href="${waLink(msg, C.whatsapp)}" target="_blank" rel="noopener">Prévenir le complexe sur WhatsApp</a>
         <p class="small muted">Le complexe coche « payé » dès qu'il voit votre paiement.</p>`}
         <button class="btn btn-ghost btn-block" id="jLeave">Me désinscrire</button>`
       : isStaff() ? "" : `<button class="btn btn-bib btn-block" id="jJoin" ${b.players.length >= C.sessions.maxJoueurs ? "disabled" : ""}>M'inscrire comme ${esc(S.me.poste.toLowerCase())} · ${money(myPrice())}</button>
-        <p class="small muted">Payez votre place par Wave pour la garder. Si la session n'atteint pas ${C.sessions.minJoueurs} joueurs, vous êtes remboursé.</p>`}`, (el) => {
+        <p class="small muted">Payez votre place par Wave pour la garder. Si la session n'atteint pas ${sMin(b)} joueurs, vous êtes remboursé.</p>`}`, (el) => {
       const j = el.querySelector("#jJoin"), l = el.querySelector("#jLeave"), n = b.players.length + 1;
       // Première inscription à une session automatique : on la crée en ligne ; sinon on ajoute seulement sa ligne
       const join = () => (b.virtual ? claim(b.id, { ...sessionBase(b.date, b.hour, b.terrain), players: { [myId()]: entry() }, createdAt: NOW }).catch((e) => { if (e.code !== "pris") throw e; return patch("creneaux", b.id, { ["players." + myId()]: entry() }); })
         : patch("creneaux", b.id, { ["players." + myId()]: entry() }));
-      j && j.addEventListener("click", () => { closeSheet(); join().then(() => { act(); toast(n >= C.sessions.minJoueurs ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${C.sessions.minJoueurs - n} joueurs`); }, fail("Inscription à la session")); });
+      j && j.addEventListener("click", () => { closeSheet(); join().then(() => { act(); toast(n >= sMin(b) ? "Inscrit ! La session est confirmée" : `Inscrit ! Plus que ${sMin(b) - n} joueurs`); }, fail("Inscription à la session")); });
       l && l.addEventListener("click", () => { closeSheet(); patch("creneaux", b.id, { ["players." + myId()]: DEL }).then(() => toast("Désinscrit"), fail("Désinscription")); });
       el.querySelectorAll("[data-ppaid]").forEach((x) => x.addEventListener("click", () => { x.disabled = true; patch("creneaux", b.id, { [`players.${x.dataset.ppaid}.paid`]: true }).then(() => { x.outerHTML = '<span class="chip chip-ok">payé</span>'; }, fail("Place encaissée")); }));
     });
@@ -904,7 +910,9 @@
           ${Compte.enabled ? '<span class="small muted">Vous travaillez au complexe ? Créez votre compte, puis demandez votre rôle au propriétaire.</span>' : ""}</div>`}
         <div class="field" id="keyField" hidden><label for="mKey">Clé d'entrée</label><input class="input" id="mKey" autocomplete="off" placeholder="Donnée par le complexe"></div>
         ${account ? `<div class="row"><div class="field grow"><label for="mTel">Téléphone</label><input class="input" id="mTel" inputmode="tel" value="${esc(account.tel)}" placeholder="77 123 45 67"></div>
-        <div class="field grow"><label for="mQuartier">Quartier</label><input class="input" id="mQuartier" value="${esc(account.quartier)}"></div></div>` : ""}
+        <div class="field grow"><label for="mQuartier">Quartier</label><input class="input" id="mQuartier" value="${esc(account.quartier)}"></div></div>
+        <div class="field"><label for="mSource">Comment avez-vous connu ${esc(C.nomCourt)} ?</label><select class="input" id="mSource"><option value="">Choisir</option>${SOURCES.map((x) => `<option ${account.source === x ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+        <label class="row small"><input type="checkbox" id="mAccord" ${account.accord ? "checked" : ""}><span>J'accepte de recevoir les rappels et les bons plans de ${esc(C.nomCourt)} sur WhatsApp. Je peux répondre STOP à tout moment.</span></label>` : ""}
         <button class="btn btn-bib btn-block" type="submit">Enregistrer</button>
       </form>
     </section></main>`;
@@ -942,11 +950,13 @@
         <div class="list">${todays.length ? todays.map((b) => staffBk(b)).join("") : '<div class="empty-state">Aucune réservation aujourd\'hui.</div>'}</div>
         ${pending.length ? `<h3>Acomptes à vérifier, prochains jours</h3><div class="list">${pending.map((b) => staffBk(b, true)).join("")}</div>` : ""}
       </section>
+      ${cPlan ? relancesSection() : ""}
+      ${can("membres") ? perdusSection() : ""}
       <section ${cPlan ? "" : "hidden"}>
         <div class="sec-head"><h2>Sessions joueurs seuls</h2><button class="link" id="openSess">Ouvrir une session</button></div>
         <div class="kpis">
           <div class="kpi"><span class="label">Inscrits cette semaine</span><b class="num">${sessAll.reduce((n, b) => n + b.players.length, 0)}</b><span class="small muted">sur ${sessAll.length} sessions</span></div>
-          <div class="kpi"><span class="label">Sessions confirmées</span><b class="num">${sessAll.filter((b) => b.players.length >= C.sessions.minJoueurs).length} / ${sessAll.length}</b><span class="small muted">à ${C.sessions.minJoueurs} joueurs</span></div>
+          <div class="kpi"><span class="label">Sessions confirmées</span><b class="num">${sessAll.filter((b) => b.players.length >= sMin(b)).length} / ${sessAll.length}</b><span class="small muted">à ${C.sessions.minJoueurs} joueurs</span></div>
         </div>
         <p class="small muted">Une session pleine rapporte ${money(C.sessions.minJoueurs * C.sessions.prixJoueur)} à ${money(C.sessions.maxJoueurs * C.sessions.prixJoueur)}, contre ${money(C.tarifs.creuse)} pour un créneau creux loué à une équipe. Ouvrez-les sur les heures pâles du graphique.</p>
         <div class="list">${sessAll.slice(0, 4).map(sessionCard).join("")}</div>
@@ -978,6 +988,11 @@
           <div class="row"><button class="btn btn-turf grow" id="qrBig">Afficher en grand</button><a class="btn btn-ghost grow" href="affiche.html" target="_blank" rel="noopener">Affiche à imprimer</a></div>
           <a class="btn btn-wa btn-block" href="${waLink(inviteText())}" target="_blank" rel="noopener">${WA_ICON}Envoyer le lien sur WhatsApp</a>
         </div>
+        <div class="card">
+          <h3>Images pour les statuts</h3>
+          <p class="small muted">Une image prête à poster en statut WhatsApp, sur Instagram ou TikTok, avec le QR code de l'appli.</p>
+          <div class="row"><button class="btn btn-ghost grow" data-img="libres">Créneaux libres ce soir</button><button class="btn btn-ghost grow" data-img="semaine">Programme de la semaine</button></div>
+        </div>
       </section>
       ${can("personnel") ? `<section>
         <div class="sec-head"><h2>Équipe et horaires</h2><button class="link" id="addStaff">Ajouter</button></div>
@@ -986,13 +1001,103 @@
     </main>`;
   }
 
+  /* ---------- Relances WhatsApp en un clic ---------- */
+  // L'appli écrit le message et choisit le numéro ; le personnel n'a plus qu'à appuyer sur Envoyer dans WhatsApp.
+  const STOP = "Pour ne plus recevoir nos messages, répondez STOP.";
+  const waBtn = (label, text, num) => `<a class="btn btn-wa btn-sm" href="${waLink(text, num)}" target="_blank" rel="noopener">${WA_ICON}${label}</a>`;
+  function relancesSection() {
+    const tmw = dkey(addDays(today(), 1)), soon = [dkey(today()), tmw, dkey(addDays(today(), 2))];
+    const rappels = S.bookings.filter((b) => b.date === tmw && !b.virtual && b.status !== "absent").sort((a, b) => a.hour - b.hour || a.terrain - b.terrain);
+    const aRemplir = openSessions().filter((b) => soon.includes(b.date) && b.players.length < sMin(b));
+    const lance = C.sessions.minJoueurs - 2;
+    const rappel = (b) => b.type === "session"
+      ? `<div class="card"><div class="row"><b class="grow">Session de ${hh(b.hour)} · ${b.players.length} inscrits</b>${waBtn("Rappel", `Rappel ${C.nom} : session demain à ${hh(b.hour)} (${C.terrains[b.terrain]}). Inscrits : ${b.players.map((p) => p.name).join(", ")}. Pensez à payer votre place par Wave. À demain ! ${APP_URL}#matchs`)}</div><p class="small muted">À envoyer dans le groupe des joueurs.</p></div>`
+      : `<div class="card"><div class="row"><b class="grow">${hh(b.hour)} · ${esc(b.team)}</b>${b.phone ? waBtn("Rappel", `Bonjour ${b.cname || b.team}, petit rappel de ${C.nom} : votre créneau est demain à ${hh(b.hour)} (${C.terrains[b.terrain]}).${b.status === "attente" ? ` L'acompte de ${money(C.acompte)} par Wave au ${C.wave} confirme la réservation.` : ""} À demain sur le terrain ! ${STOP}`, telWa(b.phone)) : '<span class="small muted">pas de téléphone</span>'}</div></div>`;
+    const remplir = (b) => { const n = b.players.length, m = sMin(b), k = m - n;
+      return `<div class="card"><div class="row"><b class="grow">${dayLabel(b.date)} ${hh(b.hour)} · ${n}/${m}</b>${waBtn(`Il manque ${k}`, `Plus que ${k} place${k > 1 ? "s" : ""} pour jouer ${dayLabel(b.date).toLowerCase()} à ${hh(b.hour)} chez ${C.nom} : ${n} inscrits sur ${m}, ${money(C.sessions.prixJoueur)} la place. Inscris-toi en 1 minute : ${APP_URL}#matchs`)}</div>
+        ${n >= lance && !b.virtual ? `<div class="row"><span class="small muted grow">Plutôt que d'annuler, lancez le match à ${n} (${Math.floor(n / 2)} contre ${Math.ceil(n / 2)}).</span><button class="btn btn-turf btn-sm" data-launch="${b.id}" data-n="${n}">Lancer à ${n}</button></div>` : ""}</div>`; };
+    return `<section>
+        <div class="sec-head"><h2>Relances WhatsApp</h2><span class="muted small">en un clic</span></div>
+        <h3>Rappels pour demain</h3>
+        <div class="list">${rappels.length ? rappels.map(rappel).join("") : '<div class="empty-state">Aucun match demain pour l\'instant.</div>'}</div>
+        <h3>Sessions à remplir</h3>
+        <div class="list">${aRemplir.length ? aRemplir.map(remplir).join("") : '<div class="empty-state">Toutes les sessions des 3 prochains jours sont complètes.</div>'}</div>
+      </section>`;
+  }
+  // Joueurs qui n'ont pas ouvert l'appli depuis 30 jours : un message « tu nous manques » avec une place à prix abonné
+  function perdusSection() {
+    if (!Compte.enabled && !(mode && mode.type === "demo")) return "";
+    if (!membres) loadMembres();
+    if (!Array.isArray(membres)) return `<section><h2>Clients à relancer</h2><div class="empty-state">${membres.fail ? "Lecture des comptes refusée." : "Chargement des comptes..."}</div></section>`;
+    const lim = Date.now() - 30 * 864e5;
+    const list = membres.filter((u) => ["joueur", "capitaine"].includes(u.role) && u.active !== false && u.accord !== false && u.tel && toDate(u.lastSeen) && toDate(u.lastSeen).getTime() < lim)
+      .sort((a, b) => toDate(b.lastSeen) - toDate(a.lastSeen));
+    const msg = (u) => `Bonjour ${(u.name || "").split(" ")[0]}, ça fait un moment qu'on ne t'a pas vu chez ${C.nom} ! Reviens jouer cette semaine : ta prochaine place en session est à ${money(C.sessions.prixAbonne)} au lieu de ${money(C.sessions.prixJoueur)}, montre simplement ce message. Les sessions : ${APP_URL}#matchs. ${STOP}`;
+    return `<section>
+        <div class="sec-head"><h2>Clients à relancer</h2><span class="muted small">absents depuis 30 jours</span></div>
+        <div class="list">${list.length ? list.slice(0, 30).map((u) => `<div class="card"><div class="row"><span class="avatars"><i>${initials(u.name)}</i></span><div class="grow"><b>${esc(u.name || "Sans nom")}</b><div class="small muted">vu ${ago(toDate(u.lastSeen))}${u.quartier ? ` · ${esc(u.quartier)}` : ""}</div></div>${waBtn("Tu nous manques", msg(u), telWa(u.tel))}</div></div>`).join("") : '<div class="empty-state">Personne à relancer : tous les joueurs sont venus ce mois-ci.</div>'}</div>
+        <p class="small muted">Le message offre une place au prix abonné : appliquez-le quand le joueur le montre.</p>
+      </section>`;
+  }
+
+  /* ---------- Images à partager ---------- */
+  // Une image 1080 x 1350 aux couleurs du complexe, avec le QR code de l'appli, partagée directement si le téléphone le permet.
+  function drawImage(kicker, title, lines) {
+    const W = 1080, H = 1350, cv = document.createElement("canvas"), g = cv.getContext("2d");
+    cv.width = W; cv.height = H;
+    g.fillStyle = "#0B3D2C"; g.fillRect(0, 0, W, H);
+    g.strokeStyle = "rgba(244,255,248,.12)"; g.lineWidth = 6; g.strokeRect(60, 60, W - 120, H - 120); g.beginPath(); g.arc(W / 2, H / 2, 150, 0, 7); g.stroke();
+    g.fillStyle = "#E9601A"; g.font = "800 44px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText(kicker.toUpperCase(), 110, 190);
+    g.fillStyle = "#F4FFF8"; g.font = "800 96px 'Barlow Condensed', Arial Narrow, sans-serif";
+    title.split("\n").forEach((t, i) => g.fillText(t, 110, 300 + i * 100));
+    let y = 300 + title.split("\n").length * 100 + 40;
+    g.font = "600 46px Arial, sans-serif";
+    lines.slice(0, 7).forEach((l) => { g.fillStyle = l.startsWith("!") ? "#E9601A" : "#F4FFF8"; g.fillText(l.replace(/^!/, ""), 110, y); y += 66; });
+    const q = qrcode(0, "M"); q.addData(APP_URL); q.make();
+    const n = q.getModuleCount(), cell = Math.floor(220 / n), qs = cell * n, qx = W - 110 - qs - 24, qy = H - 110 - qs - 24;
+    g.fillStyle = "#F4FFF8"; g.fillRect(qx - 24, qy - 24, qs + 48, qs + 48); g.fillStyle = "#0B3D2C";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) g.fillRect(qx + c * cell, qy + r * cell, cell, cell);
+    g.fillStyle = "#F4FFF8"; g.font = "800 60px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText(C.nom, 110, H - 200);
+    g.font = "500 36px Arial, sans-serif"; g.fillStyle = "rgba(244,255,248,.8)"; g.fillText("Réserve ou inscris-toi seul sur l'appli", 110, H - 140);
+    return cv;
+  }
+  function shareImage(kind, resId) {
+    const k = dkey(today());
+    let cv, name, text;
+    if (kind === "libres") {
+      const free = hours().filter((h) => !isPast(k, h)).map((h) => [h, C.terrains.filter((_, ti) => !S.bookings.some((b) => b.date === k && b.hour === h && b.terrain === ti))]).filter(([, t]) => t.length);
+      if (!free.length) return toast("Tout est complet ce soir, bravo !");
+      cv = drawImage(dayLabel(k), "Créneaux libres\nce soir", free.map(([h, t]) => `${hh(h)}  ·  ${t.join(", ")}`).concat(free.some(([h]) => isAfterwork(k, h)) ? [`!${hh(C.ouverture)} : afterwork à ${money(C.tarifs.afterwork)}`] : []));
+      name = "creneaux-libres"; text = `Créneaux libres ce soir chez ${C.nom} : ${free.map(([h]) => hh(h)).join(", ")}. Réserve ici : ${APP_URL}#planning`;
+    } else if (kind === "semaine") {
+      const sess = openSessions().filter((b) => b.date < dkey(addDays(today(), 7)));
+      // 7 lignes tiennent au-dessus du QR code : les 5 prochaines sessions et les prix
+      const lines = sess.slice(0, 5).map((b) => `${dayLabel(b.date)} ${hh(b.hour)}  ·  ${b.players.length}/${sMin(b)} inscrits`);
+      if (C.tarifs.afterwork > 0) lines.push(`!Afterwork ${hh(C.ouverture)} en semaine : ${money(C.tarifs.afterwork)}`);
+      lines.push(`!Session : ${money(C.sessions.prixJoueur)} la place`);
+      cv = drawImage("Cette semaine", "Viens jouer,\nmême seul", lines);
+      name = "programme-semaine"; text = `Cette semaine chez ${C.nom} : ${sess.length} sessions ouvertes aux joueurs seuls, ${money(C.sessions.prixJoueur)} la place. Inscris-toi : ${APP_URL}#matchs`;
+    } else {
+      const r = S.results.find((x) => x.id === resId);
+      if (!r) return;
+      cv = drawImage(`${dayLabel(r.date)} · ${hh(r.hour)}`, `${r.sa} - ${r.sb}`, [r.a, "contre", r.b, "", r.motm ? `!Homme du match : ${r.motm}` : ""]);
+      name = "score"; text = `${r.a} ${r.sa} - ${r.sb} ${r.b} chez ${C.nom}. À qui le tour ? ${APP_URL}`;
+    }
+    cv.toBlob((blob) => {
+      const file = new File([blob], `${name}.png`, { type: "image/png" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) return navigator.share({ files: [file], text }).catch(() => {});
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+      toast("Image enregistrée : publiez-la depuis votre galerie");
+    }, "image/png");
+  }
+
   function staffBk(b, withDay) {
     const past = isPast(b.date, b.hour);
     const res = S.results.find((r) => r.date === b.date && r.hour === b.hour && r.a === b.team);
     const chip = b.status === "paye" ? '<span class="chip chip-ok">Payé</span>' : b.status === "attente" ? '<span class="chip chip-warn">Acompte attendu</span>' : b.status === "absent" ? '<span class="chip chip-bad">Pas venu</span>' : '<span class="chip chip-n">Confirmé</span>';
     return `<div class="card bk">
       <div class="hr num">${hh(b.hour)}</div>
-      <div><div class="row"><b class="grow">${b.type === "session" ? `Session : ${b.players.length}/${C.sessions.minJoueurs} joueurs` : esc(b.team)}${b.opponent ? ` vs ${esc(b.opponent)}` : b.type === "defi" ? " (cherche adversaire)" : ""}</b>${chip}</div>
+      <div><div class="row"><b class="grow">${b.type === "session" ? `Session : ${b.players.length}/${sMin(b)} joueurs` : esc(b.team)}${b.opponent ? ` vs ${esc(b.opponent)}` : b.type === "defi" ? " (cherche adversaire)" : ""}</b>${chip}</div>
         <div class="small muted">${withDay ? `${dayLabel(b.date)} · ` : ""}${esc(C.terrains[b.terrain])} · ${money(b.price)}${b.phone ? ` · ${esc(b.phone)}` : ""}${res ? ` · Score ${res.sa}-${res.sb}` : ""}</div>
         <div class="acts">
           ${b.status === "attente" && (can("planning") || can("caisse")) ? `<button class="btn btn-turf btn-sm" data-confirm="${b.id}">Acompte reçu</button>` : ""}
@@ -1000,6 +1105,7 @@
           ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" && can("caisse") ? `<button class="btn btn-bib btn-sm" data-cash="${b.id}">Encaisser</button>` : ""}
           ${b.type !== "session" && b.status !== "paye" && b.status !== "absent" && past && can("planning") ? `<button class="btn btn-ghost btn-sm" data-absent="${b.id}">Pas venu</button>` : ""}
           ${past && b.opponent && !res && can("scores") ? `<button class="btn btn-ghost btn-sm" data-score="${b.id}">Saisir le score</button>` : ""}
+          ${res ? `<button class="btn btn-ghost btn-sm" data-img="score" data-res="${esc(res.id)}">Image du score</button>` : ""}
         </div></div>
     </div>`;
   }
@@ -1163,7 +1269,7 @@
     if (mode && mode.type === "demo") { membres = demoAdmin().users; return; }
     if (!Compte.enabled) { membres = []; return; }
     membres = { loading: true };
-    Compte.admin.users().then((u) => { membres = u; }, (e) => { membres = { fail: e.code || e.message }; }).then(() => { if (current() === "reglages") render(); });
+    Compte.admin.users().then((u) => { membres = u; }, (e) => { membres = { fail: e.code || e.message }; }).then(() => { if (["reglages", "gerant"].includes(current())) render(); });
   }
   function membresSection() {
     if (!Compte.enabled) return '<section><h2>Membres</h2><div class="empty-state">Les membres arrivent avec les comptes en ligne.</div></section>';
@@ -1260,6 +1366,9 @@
           <div class="kpi"><span class="label">Inactifs</span><b class="num">${count("Inactif")}</b></div>
           <div class="kpi"><span class="label">Erreurs (7 j)</span><b class="num" style="color:${errors.length ? "var(--bad)" : "inherit"}">${errors.length}</b></div>
         </div>
+        ${(() => { const src = SOURCES.map((x) => [x, users.filter((u) => u.source === x).length]).filter(([, n]) => n).sort((a, b) => b[1] - a[1]);
+          return src.length ? `<div class="card"><h3>Comment ils ont connu ${esc(C.nomCourt)}</h3><table class="rank"><tbody>${src.map(([x, n]) => `<tr><td>${esc(x)}</td><td class="n">${n}</td></tr>`).join("")}</tbody></table>
+          <p class="small muted">${users.filter((u) => u.accord).length} joueurs acceptent les messages WhatsApp.</p></div>` : ""; })()}
         <div class="card">
           <h3>Mode présentation</h3>
           <p class="small muted">Montrez l'appli sur votre seul téléphone, avec des données d'exemple : la barre en haut de l'écran passe de joueur à capitaine, personnel ou gérant.</p>
@@ -1374,7 +1483,7 @@
         const role = f.querySelector("[name=mRole]:checked").value, key = ($("#mKey").value || "").trim().toUpperCase();
         if (!Compte.enabled && ((role === "gerant" && key !== C.cles.gerant) || (role === "personnel" && key !== C.cles.personnel))) { toast("Clé d'entrée incorrecte"); return; }
         const p = { name: $("#mName").value.trim(), poste: f.querySelector("[name=mPoste]:checked").value, equipe: $("#mTeam").value, role };
-        if (account) Object.assign(p, { tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "" });
+        if (account) Object.assign(p, { tel: ($("#mTel") || {}).value || "", quartier: ($("#mQuartier") || {}).value || "", source: ($("#mSource") || {}).value || "", accord: !!($("#mAccord") || {}).checked });
         setMe(p).then(() => toast("Profil enregistré"), fail("Profil"));
         if (account) put("dispos", myId(), { name: p.name, poste: p.poste, slots: S.me.slots }).catch(() => {});
         location.hash = memberRole(role) ? "gerant" : "profil"; render();
@@ -1419,6 +1528,8 @@
     on("[data-absent]", (el) => patch("creneaux", el.dataset.absent, { status: "absent" }).catch(fail("Absence")));
     on("[data-score]", (el) => scoreSheet(el.dataset.score));
     on("#exportCsv", exportCsv);
+    on("[data-img]", (el) => shareImage(el.dataset.img, el.dataset.res));
+    on("[data-launch]", (el) => { el.disabled = true; patch("creneaux", el.dataset.launch, { min: +el.dataset.n }).then(() => toast(`Session lancée à ${el.dataset.n} joueurs : prévenez-les avec le bouton Rappel`), fail("Lancement de la session")); });
     const tf = $("#tarifForm");
     tf && tf.addEventListener("submit", (e) => {
       e.preventDefault();

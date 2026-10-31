@@ -56,12 +56,14 @@ service cloud.firestore {
       // ni un rôle du personnel. Un compte suspendu ne peut plus rien enregistrer, et ne peut pas lever sa suspension.
       allow update: if signedIn() && request.auth.uid == uid
         && resource.data.active == true
-        && changed().hasOnly(['name', 'tel', 'quartier', 'role', 'poste', 'equipe', 'lastSeen', 'activite'])
+        && changed().hasOnly(['name', 'tel', 'quartier', 'role', 'poste', 'equipe', 'source', 'accord', 'lastSeen', 'activite'])
         && d().lastSeen == request.time
         // get() : les fiches créées avant l'ajout du téléphone, du quartier et de l'activité n'ont pas ces champs
         && str(d().name, 80) && str(d().get('tel', ''), 30) && str(d().get('quartier', ''), 60)
         && (d().role == resource.data.role || d().role in ['joueur', 'capitaine'])
         && str(d().poste, 30) && str(d().get('equipe', ''), 40)
+        // d'où il a connu le complexe, et son accord pour recevoir les messages WhatsApp
+        && str(d().get('source', ''), 40) && d().get('accord', false) is bool
         && activiteOk(d().get('activite', {}));
       // l'admin suspend, réactive ou donne un rôle (gérant, personnel), et rien d'autre
       allow update: if admin()
@@ -83,9 +85,10 @@ service cloud.firestore {
     }
     match /reglages/tarifs {
       allow write: if can('tarifs')
-        && d().keys().hasOnly(['creuse', 'pleine', 'heurePleine', 'acompte', 'prixJoueur', 'prixAbonne', 'abonnementMois', 'minJoueurs', 'maxJoueurs'])
+        && d().keys().hasOnly(['creuse', 'pleine', 'heurePleine', 'afterwork', 'acompte', 'prixJoueur', 'prixAbonne', 'abonnementMois', 'minJoueurs', 'maxJoueurs'])
         && d().creuse is int && d().pleine is int && d().acompte is int && d().prixJoueur is int && d().prixAbonne is int && d().abonnementMois is int
         && d().heurePleine is int && d().heurePleine >= 0 && d().heurePleine <= 24
+        && d().get('afterwork', 0) is int && d().get('afterwork', 0) >= 0
         && d().minJoueurs is int && d().maxJoueurs is int && d().minJoueurs >= 2 && d().maxJoueurs >= d().minJoueurs && d().maxJoueurs <= 30;
     }
 
@@ -106,13 +109,15 @@ service cloud.firestore {
     // donc deux téléphones ne peuvent pas prendre le même créneau. Lisible par tous (vitrine), sans téléphone.
     match /creneaux/{id} {
       function bkOk() {
-        return d().keys().hasOnly(['date', 'hour', 'terrain', 'team', 'teamId', 'opponent', 'opponentId', 'opBy', 'type', 'niveau', 'price', 'status', 'by', 'createdAt', 'players'])
+        return d().keys().hasOnly(['date', 'hour', 'terrain', 'team', 'teamId', 'opponent', 'opponentId', 'opBy', 'type', 'niveau', 'price', 'status', 'by', 'createdAt', 'players', 'min'])
           && id == d().date + '_' + string(d().hour) + '_' + string(d().terrain)
           && d().date is string && d().date.size() == 10
           && d().hour is int && d().hour >= 0 && d().hour <= 23 && d().terrain is int && d().terrain >= 0 && d().terrain <= 9
           && str(d().team, 60) && str(d().opponent, 60) && str(d().niveau, 20)
           && d().type in ['prive', 'defi', 'session'] && d().status in ['attente', 'confirme', 'paye', 'absent']
-          && d().get('players', {}) is map && d().get('players', {}).size() <= 30;
+          && d().get('players', {}) is map && d().get('players', {}).size() <= 30
+          // session lancée plus tôt par le personnel (« Lancer à 10 »)
+          && d().get('min', 2) is int && d().get('min', 2) >= 2 && d().get('min', 2) <= 30;
       }
       // tarif réduit seulement pour un abonné en cours
       function aboActif() {
